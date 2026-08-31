@@ -33,6 +33,7 @@ const ASAR = path.join(INSTALL, 'resources', 'app.asar');
 const BACKUP = path.join(INSTALL, 'resources', 'app.asar.bak-pristine');
 const GLM = path.join(INSTALL, 'resources', 'glm', 'zcode.cjs');
 const GLM_BAK = path.join(INSTALL, 'resources', 'glm', 'zcode.cjs.bak-pristine');
+const BACKUP_META = path.join(INSTALL, 'resources', 'app.asar.bak-pristine.json');
 
 function findInstall() {
   const cands = [
@@ -47,6 +48,26 @@ function findInstall() {
 function fail(msg) {
   console.error('\n[FAIL] ' + msg);
   process.exit(1);
+}
+
+function packageVersion(asarPath) {
+  try {
+    return JSON.parse(asar.extractFile(asarPath, 'package.json').toString()).version || '';
+  } catch {
+    return '';
+  }
+}
+
+function readBackupVersion() {
+  try {
+    return JSON.parse(fs.readFileSync(BACKUP_META, 'utf8')).version || '';
+  } catch {
+    return '';
+  }
+}
+
+function usableBackup(version) {
+  return fs.existsSync(BACKUP) && readBackupVersion() === version;
 }
 
 function sleepMs(ms) {
@@ -75,9 +96,10 @@ function startZCode() {
 function restore() {
   let ok = false;
   killZCode();
-  if (fs.existsSync(BACKUP)) { fs.copyFileSync(BACKUP, ASAR); ok = true; }
+  const version = packageVersion(ASAR);
+  if (usableBackup(version)) { fs.copyFileSync(BACKUP, ASAR); ok = true; }
   if (fs.existsSync(GLM_BAK)) { fs.copyFileSync(GLM_BAK, GLM); ok = true; }
-  if (!ok) fail('no backups found (nothing was ever patched?)');
+  if (!ok) fail('no version-matching backups found (nothing was ever patched for this ZCode version?)');
   console.log('[OK] restored pristine app.asar and glm/zcode.cjs');
   startZCode();
 }
@@ -103,7 +125,9 @@ function syntaxCheck(filePath) {
   if (r.status !== 0) fail('syntax check failed after patching: ' + filePath + '\n' + r.stderr);
 }
 
-// hashed bundle names change every release; find by a stable content marker
+// Hashed bundle names change every release; find each logical bundle by a
+// stable content marker. Keep the prefix as a sanity check, but never depend
+// on the exact hash or on short minified function names.
 function findByMarker(dir, prefix, marker) {
   for (const f of fs.readdirSync(dir)) {
     if (!f.startsWith(prefix)) continue;
@@ -113,17 +137,29 @@ function findByMarker(dir, prefix, marker) {
   fail('no bundle matching ' + prefix + '* containing marker "' + marker + '" in ' + dir);
 }
 
+function findJsByMarker(dir, marker) {
+  const matches = [];
+  for (const f of fs.readdirSync(dir)) {
+    if (!f.endsWith('.js')) continue;
+    const p = path.join(dir, f);
+    if (fs.readFileSync(p, 'utf8').includes(marker)) matches.push(p);
+  }
+  if (matches.length === 1) return matches[0];
+  fail('expected exactly one bundle containing marker "' + marker + '" in ' + dir + ', found ' + matches.length);
+}
+
 async function main() {
   if (RESTORE) return restore();
   console.log('ZCode install:', INSTALL);
   if (!fs.existsSync(ASAR)) fail('app.asar not found at ' + ASAR);
   if (!fs.existsSync(GLM)) fail('resources/glm/zcode.cjs not found');
 
-  // idempotent: if a previous patched build is present, restore pristine first
-  if (!DRY && fs.existsSync(BACKUP)) {
+  // idempotent: if a previous patched build is present, restore the matching pristine backup first
+  const appVersion = packageVersion(ASAR);
+  if (!DRY && usableBackup(appVersion)) {
     const cur = fs.readFileSync(ASAR);
     if (cur.includes('OpenAiOAuthAdapter')) {
-      console.log('previous patched build detected; restoring pristine backup first...');
+      console.log('previous patched build detected; restoring version-matching pristine backup first...');
       killZCode();
       fs.copyFileSync(BACKUP, ASAR);
     }
@@ -141,13 +177,14 @@ async function main() {
   console.log('extracting app.asar ->', work);
   asar.extractAll(ASAR, work);
 
+  const assets = path.join(work, 'out', 'renderer', 'assets');
   const resolve = {
     'out/renderer/assets/styles-C2WGZ-SY.js': () =>
-      findByMarker(path.join(work, 'out', 'renderer', 'assets'), 'styles-', 'function Sz({providers:'),
+      findJsByMarker(assets, 'function SLt({selectedNavItem:e'),
     'out/renderer/assets/src-C3so_Fno.js': () =>
-      findByMarker(path.join(work, 'out', 'renderer', 'assets'), 'src-', 'rootDomain:`z.ai`'),
+      findJsByMarker(assets, 'rootDomain:`z.ai`'),
     'out/host/chunk-EGJBTUMC.js': () =>
-      findByMarker(path.join(work, 'out', 'host'), 'chunk-', 'convertModelProviderConfigToZCodeProviderInput'),
+      findJsByMarker(path.join(work, 'out', 'host'), 'convertModelProviderConfigToZCodeProviderInput'),
   };
 
   for (const [rel, spans] of Object.entries(spec)) {
@@ -192,7 +229,10 @@ async function main() {
 
   console.log('closing ZCode...');
   killZCode();
-  if (!fs.existsSync(BACKUP)) fs.copyFileSync(ASAR, BACKUP);
+  if (!usableBackup(appVersion)) {
+    fs.copyFileSync(ASAR, BACKUP);
+    fs.writeFileSync(BACKUP_META, JSON.stringify({ version: appVersion, savedAt: new Date().toISOString() }, null, 2) + '\n');
+  }
   fs.copyFileSync(out, ASAR);
   // verify the swap landed byte-for-byte before restarting
   const a = fs.readFileSync(ASAR), b = fs.readFileSync(out);
