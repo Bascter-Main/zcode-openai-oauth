@@ -66,10 +66,10 @@ function killZCode() {
 
 function startZCode() {
   const exe = path.join(INSTALL, 'ZCode.exe');
-  if (fs.existsSync(exe)) {
-    const child = spawnSync('cmd', ['/c', 'start', 'ZCode', exe], { stdio: 'ignore' });
-    child && child.unref && child.unref();
-  }
+  if (!fs.existsSync(exe)) return;
+  const { spawn } = require('child_process');
+  const child = spawn(exe, [], { detached: true, stdio: 'ignore' });
+  child.unref();
 }
 
 function restore() {
@@ -194,6 +194,9 @@ async function main() {
   killZCode();
   if (!fs.existsSync(BACKUP)) fs.copyFileSync(ASAR, BACKUP);
   fs.copyFileSync(out, ASAR);
+  // verify the swap landed byte-for-byte before restarting
+  const a = fs.readFileSync(ASAR), b = fs.readFileSync(out);
+  if (a.length !== b.length || !a.equals(b)) fail('deploy verification failed (app.asar differs from packed output). Re-run patch.bat.');
   fs.rmSync(out, { force: true });
   console.log('[deployed] app.asar (pristine backup kept as app.asar.bak-pristine)');
   startZCode();
