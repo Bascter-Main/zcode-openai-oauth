@@ -21,7 +21,7 @@ const path = require('path');
 const os = require('os');
 const { spawnSync } = require('child_process');
 
-const asar = require(path.join(__dirname, 'tools', 'node_modules', '@electron', 'asar'));
+const asar = require('@electron/asar');
 
 const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
