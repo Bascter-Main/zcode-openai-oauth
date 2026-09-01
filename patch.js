@@ -2,23 +2,17 @@
 /*
  * ZCode OpenAI OAuth patcher
  *
- * One command: adds a built-in OpenAI provider family (ChatGPT subscription
- * OAuth login) to the ZCode desktop app.
- *
  *   node patch.js               patch, deploy, restart ZCode
- *   node patch.js --dry-run     verify all anchors match; write nothing
+ *   node patch.js --dry-run     validate and repack in a temporary directory
+ *   node patch.js --no-deploy   write staged .patched files without deploying
  *   node patch.js --dir <path>  use a custom ZCode install directory
- *   node patch.js --restore     restore the pristine backup and restart
- *
- * Upgrade resilience: every patch is a content anchor (no hardcoded bundle
- * hashes or byte offsets). Hashed bundle names (styles-*.js etc.) are resolved
- * by scanning for stable content markers. After a ZCode upgrade, just run the
- * patcher again; if some anchor no longer matches, the run aborts with a list
- * of failed anchors and leaves the installation untouched.
+ *   node patch.js --restore     restore same-version pristine backups
+ *   node patch.js --self-test   run the patcher's fixture checks
  */
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { createHash } = require('crypto');
 const { spawnSync } = require('child_process');
 
 const asar = require('@electron/asar');
@@ -27,27 +21,70 @@ const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
 const NO_DEPLOY = args.includes('--no-deploy');
 const RESTORE = args.includes('--restore');
+const SELF_TEST = args.includes('--self-test');
 const dirIdx = args.indexOf('--dir');
-const INSTALL = dirIdx >= 0 ? args[dirIdx + 1] : findInstall();
-const ASAR = path.join(INSTALL, 'resources', 'app.asar');
-const BACKUP = path.join(INSTALL, 'resources', 'app.asar.bak-pristine');
-const GLM = path.join(INSTALL, 'resources', 'glm', 'zcode.cjs');
-const GLM_BAK = path.join(INSTALL, 'resources', 'glm', 'zcode.cjs.bak-pristine');
-const BACKUP_META = path.join(INSTALL, 'resources', 'app.asar.bak-pristine.json');
+const REQUESTED_INSTALL = dirIdx >= 0 ? args[dirIdx + 1] : null;
+const APP_PATCH_MARKER = 'OpenAiOAuthAdapter';
+const GLM_PATCH_MARKER = 'let cdx=String(this.config.url({path:""})).indexOf("chatgpt.com")>=0';
+const OPENAI_PROVIDER_IDS = [
+  'builtin:openai',
+  'builtin:openai-coding-plan',
+  'builtin:openai-start-plan',
+];
+
+function runningZCodeInstall() {
+  if (process.platform !== 'win32') return null;
+  const result = spawnSync('powershell.exe', [
+    '-NoProfile',
+    '-Command',
+    '(Get-CimInstance Win32_Process -Filter "Name=\'ZCode.exe\'" | ' +
+      'Select-Object -ExpandProperty ExecutablePath -First 1)',
+  ], { encoding: 'utf8' });
+  const executable = result.status === 0 ? result.stdout.trim() : '';
+  return executable ? path.dirname(executable) : null;
+}
 
 function findInstall() {
-  const cands = [
-    'D:\\Program Files\\ZCode',
-    'C:\\Program Files\\ZCode',
-    path.join(process.env.LOCALAPPDATA || '', 'Programs', 'ZCode'),
-  ];
-  for (const c of cands) if (fs.existsSync(path.join(c, 'resources', 'app.asar'))) return c;
+  const candidates = process.env.ZCODE_INSTALL_DIR ? [process.env.ZCODE_INSTALL_DIR] : [
+    runningZCodeInstall(),
+    process.env.ProgramFiles && path.join(process.env.ProgramFiles, 'ZCode'),
+    process.env['ProgramFiles(x86)'] && path.join(process.env['ProgramFiles(x86)'], 'ZCode'),
+    process.env.LOCALAPPDATA && path.join(process.env.LOCALAPPDATA, 'Programs', 'ZCode'),
+    ...'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').flatMap(drive => [
+      `${drive}:\\Program Files\\ZCode`,
+      `${drive}:\\Program Files (x86)\\ZCode`,
+    ]),
+  ].filter(Boolean).map(candidate => path.resolve(candidate));
+  const installs = [...new Set(candidates)].filter(candidate =>
+    fs.existsSync(path.join(candidate, 'ZCode.exe')) &&
+    fs.existsSync(path.join(candidate, 'resources', 'app.asar'))
+  );
+  if (installs.length === 1) return installs[0];
+  if (installs.length > 1) {
+    throw new Error(`multiple ZCode installs found; pass --dir <path>: ${installs.join(', ')}`);
+  }
   throw new Error('ZCode install not found; pass --dir <path>');
 }
 
-function fail(msg) {
-  console.error('\n[FAIL] ' + msg);
-  process.exit(1);
+function installPaths(install) {
+  const resources = path.join(install, 'resources');
+  const glmDir = path.join(resources, 'glm');
+  return {
+    INSTALL: install,
+    ASAR: path.join(resources, 'app.asar'),
+    APP_UNPACKED: path.join(resources, 'app.asar.unpacked'),
+    BACKUP: path.join(resources, 'app.asar.bak-pristine'),
+    BACKUP_META: path.join(resources, 'app.asar.bak-pristine.json'),
+    GLM: path.join(glmDir, 'zcode.cjs'),
+    GLM_BAK: path.join(glmDir, 'zcode.cjs.bak-pristine'),
+    GLM_META: path.join(glmDir, 'zcode.cjs.bak-pristine.json'),
+  };
+}
+
+function compatibilityError(message) {
+  const error = new Error(message);
+  error.code = 'ZCODE_PATCH_INCOMPATIBLE';
+  return error;
 }
 
 function packageVersion(asarPath) {
@@ -58,16 +95,120 @@ function packageVersion(asarPath) {
   }
 }
 
-function readBackupVersion() {
+function readMetadata(metaPath) {
   try {
-    return JSON.parse(fs.readFileSync(BACKUP_META, 'utf8')).version || '';
+    return JSON.parse(fs.readFileSync(metaPath, 'utf8'));
   } catch {
-    return '';
+    return {};
   }
 }
 
-function usableBackup(version) {
-  return fs.existsSync(BACKUP) && readBackupVersion() === version;
+function fileSha256(filePath) {
+  const hash = createHash('sha256');
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const descriptor = fs.openSync(filePath, 'r');
+  try {
+    for (;;) {
+      const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) break;
+      hash.update(buffer.subarray(0, bytesRead));
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+  return hash.digest('hex');
+}
+
+function fileIncludes(filePath, value) {
+  const needle = Buffer.from(value);
+  const buffer = Buffer.allocUnsafe(1024 * 1024);
+  const descriptor = fs.openSync(filePath, 'r');
+  let carry = Buffer.alloc(0);
+  try {
+    for (;;) {
+      const bytesRead = fs.readSync(descriptor, buffer, 0, buffer.length, null);
+      if (bytesRead === 0) return false;
+      const chunk = carry.length === 0
+        ? buffer.subarray(0, bytesRead)
+        : Buffer.concat([carry, buffer.subarray(0, bytesRead)]);
+      if (chunk.includes(needle)) return true;
+      carry = Buffer.from(chunk.subarray(Math.max(0, chunk.length - needle.length + 1)));
+    }
+  } finally {
+    fs.closeSync(descriptor);
+  }
+}
+
+function asarHasPatch(asarPath) {
+  return fs.existsSync(asarPath) && fileIncludes(asarPath, APP_PATCH_MARKER);
+}
+
+function metadataHashMatches(metadata, filePath) {
+  return typeof metadata.sha256 === 'string' && metadata.sha256.length === 64 &&
+    metadata.sha256 === fileSha256(filePath);
+}
+
+function usableAppBackup(paths, version) {
+  if (!fs.existsSync(paths.BACKUP) || packageVersion(paths.BACKUP) !== version ||
+      asarHasPatch(paths.BACKUP)) return false;
+  const metadata = readMetadata(paths.BACKUP_META);
+  return metadata.version === version && metadataHashMatches(metadata, paths.BACKUP);
+}
+
+function countMatches(text, needle) {
+  return text.split(needle).length - 1;
+}
+
+function patchText(text, spans, label) {
+  let result = text;
+  for (let index = 0; index < spans.length; index++) {
+    const matches = countMatches(result, spans[index].find);
+    if (matches !== 1) {
+      throw compatibilityError(
+        `${label}: anchor ${index + 1}/${spans.length} matched ${matches} times; ` +
+        'this ZCode version changed the patched code.'
+      );
+    }
+    result = result.replace(spans[index].find, spans[index].replace);
+  }
+  return result;
+}
+
+function isPristineText(text, spans, label) {
+  try {
+    patchText(text, spans, label);
+    return true;
+  } catch (error) {
+    if (error && error.code === 'ZCODE_PATCH_INCOMPATIBLE') return false;
+    throw error;
+  }
+}
+
+function applySpans(filePath, spans, label) {
+  const patched = patchText(fs.readFileSync(filePath, 'utf8'), spans, label);
+  fs.writeFileSync(filePath, patched);
+}
+
+function syntaxCheck(filePath) {
+  const result = spawnSync(process.execPath, ['--check', filePath], { encoding: 'utf8' });
+  if (result.status !== 0) {
+    throw new Error(`syntax check failed after patching: ${filePath}\n${result.stderr}`);
+  }
+}
+
+function findJsByMarker(dir, marker) {
+  const matches = [];
+  for (const file of fs.readdirSync(dir)) {
+    if (!file.endsWith('.js')) continue;
+    const candidate = path.join(dir, file);
+    if (fs.readFileSync(candidate, 'utf8').includes(marker)) matches.push(candidate);
+  }
+  if (matches.length !== 1) {
+    throw compatibilityError(
+      `expected exactly one bundle containing marker "${marker}" in ${dir}, found ${matches.length}`
+    );
+  }
+  return matches[0];
 }
 
 function sleepMs(ms) {
@@ -75,172 +216,783 @@ function sleepMs(ms) {
 }
 
 function zcodeRunning() {
-  const r = spawnSync('tasklist', ['/FI', 'IMAGENAME eq ZCode.exe'], { encoding: 'utf8' });
-  return !!(r.stdout && r.stdout.includes('ZCode.exe'));
+  if (process.platform !== 'win32') return false;
+  const result = spawnSync('tasklist', ['/FI', 'IMAGENAME eq ZCode.exe'], { encoding: 'utf8' });
+  return !!(result.stdout && result.stdout.includes('ZCode.exe'));
 }
 
 function killZCode() {
   if (process.platform !== 'win32') return;
   spawnSync('taskkill', ['/F', '/IM', 'ZCode.exe'], { stdio: 'ignore' });
-  for (let i = 0; i < 20 && zcodeRunning(); i++) sleepMs(500);
+  for (let index = 0; index < 20 && zcodeRunning(); index++) sleepMs(500);
+  if (zcodeRunning()) throw new Error('ZCode.exe did not stop; close it manually and run patch.bat again');
 }
 
-function startZCode() {
-  const exe = path.join(INSTALL, 'ZCode.exe');
-  if (!fs.existsSync(exe)) return;
+function startZCode(paths) {
+  const executable = path.join(paths.INSTALL, 'ZCode.exe');
+  if (!fs.existsSync(executable)) return;
   const { spawn } = require('child_process');
-  const child = spawn(exe, [], { detached: true, stdio: 'ignore' });
+  const child = spawn(executable, [], { detached: true, stdio: 'ignore' });
   child.unref();
 }
 
-function restore() {
-  let ok = false;
+function classifyGlmBackupFacts(facts, version) {
+  if (!facts.exists || !facts.pristine || facts.metadataHashMatches !== true) return 'invalid';
+  return facts.metaVersion === version ? 'usable' : 'invalid';
+}
+
+function glmBackupStatus(paths, version, glmSpec) {
+  const exists = fs.existsSync(paths.GLM_BAK);
+  const pristine = exists && isPristineText(
+    fs.readFileSync(paths.GLM_BAK, 'utf8'),
+    glmSpec.spans,
+    'GLM pristine backup'
+  );
+  return classifyGlmBackupFacts({
+    exists,
+    pristine,
+    metaVersion: readMetadata(paths.GLM_META).version || '',
+    metadataHashMatches: exists &&
+      metadataHashMatches(readMetadata(paths.GLM_META), paths.GLM_BAK),
+  }, version);
+}
+
+function writeMetadata(metaPath, version, sourcePath) {
+  const temporary = `${metaPath}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, JSON.stringify({
+    version,
+    sha256: fileSha256(sourcePath),
+    savedAt: new Date().toISOString(),
+  }, null, 2) + '\n');
+  fs.renameSync(temporary, metaPath);
+}
+
+function copyVerified(source, destination) {
+  const temporary = `${destination}.tmp-${process.pid}`;
+  try {
+    fs.copyFileSync(source, temporary);
+    if (fileSha256(source) !== fileSha256(temporary)) {
+      throw new Error(`copy verification failed: ${destination}`);
+    }
+    fs.renameSync(temporary, destination);
+  } finally {
+    fs.rmSync(temporary, { force: true });
+  }
+}
+
+function selectGlmSource(paths, version, glmSpec) {
+  const live = fs.readFileSync(paths.GLM, 'utf8');
+  if (!live.includes(GLM_PATCH_MARKER)) return paths.GLM;
+  const status = glmBackupStatus(paths, version, glmSpec);
+  if (status === 'usable') return paths.GLM_BAK;
+  throw new Error('patched GLM detected, but no hash-verified same-version pristine GLM backup is available');
+}
+
+function stageAsarSource(sourceAsar, unpackedSource, stageDir, extractDir) {
+  const stagedAsar = path.join(stageDir, 'source.asar');
+  const stagedUnpacked = `${stagedAsar}.unpacked`;
+  copyVerified(sourceAsar, stagedAsar);
+  if (fs.existsSync(unpackedSource)) {
+    fs.symlinkSync(path.resolve(unpackedSource), stagedUnpacked, process.platform === 'win32' ? 'junction' : 'dir');
+  }
+  try {
+    asar.extractAll(stagedAsar, extractDir);
+  } finally {
+    fs.rmSync(stagedUnpacked, { recursive: true, force: true });
+  }
+}
+
+function writeJsonAtomic(filePath, value) {
+  const temporary = `${filePath}.tmp-${process.pid}`;
+  fs.writeFileSync(temporary, JSON.stringify(value, null, 2) + '\n');
+  fs.renameSync(temporary, filePath);
+}
+
+function isGeneratedOpenAiModelRef(value) {
+  if (typeof value !== 'string') return false;
+  return OPENAI_PROVIDER_IDS.some(providerId =>
+    value.includes(providerId) || value.includes(encodeURIComponent(providerId))
+  );
+}
+
+function cleanStateObjects(config, agents) {
+  let configChanged = false;
+  let agentsChanged = false;
+  const staleProfiles = new Set();
+
+  if (config && config.provider && typeof config.provider === 'object') {
+    for (const providerId of OPENAI_PROVIDER_IDS) {
+      if (Object.prototype.hasOwnProperty.call(config.provider, providerId)) {
+        delete config.provider[providerId];
+        configChanged = true;
+      }
+    }
+  }
+
+  const modelOverrides = agents && agents.builtInModelOverrides;
+  if (modelOverrides && typeof modelOverrides === 'object') {
+    for (const [profileId, modelRef] of Object.entries(modelOverrides)) {
+      if (!isGeneratedOpenAiModelRef(modelRef)) continue;
+      staleProfiles.add(profileId);
+      delete modelOverrides[profileId];
+      agentsChanged = true;
+    }
+  }
+
+  const thoughtOverrides = agents && agents.builtInThoughtLevelOverrides;
+  if (thoughtOverrides && typeof thoughtOverrides === 'object') {
+    for (const profileId of staleProfiles) {
+      if (!Object.prototype.hasOwnProperty.call(thoughtOverrides, profileId)) continue;
+      delete thoughtOverrides[profileId];
+      agentsChanged = true;
+    }
+  }
+
+  return { configChanged, agentsChanged };
+}
+
+function zcodeStateDirs() {
+  const candidates = [];
+  const base = process.env.ZCODE_DATA_BASE_DIR;
+  if (base) {
+    candidates.push(path.basename(base).toLowerCase() === '.zcode'
+      ? path.join(base, 'v2')
+      : path.join(base, '.zcode', 'v2'));
+  }
+  candidates.push(path.join(os.homedir(), '.zcode', 'v2'));
+  return [...new Set(candidates.map(candidate => path.resolve(candidate)))];
+}
+
+function readJsonIfPresent(filePath) {
+  if (!fs.existsSync(filePath)) return null;
+  return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+}
+
+function staleStateFiles() {
+  const results = [];
+  for (const dir of zcodeStateDirs()) {
+    const configPath = path.join(dir, 'config.json');
+    const agentsPath = path.join(dir, 'agents-state.json');
+    const config = readJsonIfPresent(configPath);
+    const agents = readJsonIfPresent(agentsPath);
+    if (!config && !agents) continue;
+    const configCopy = config && JSON.parse(JSON.stringify(config));
+    const agentsCopy = agents && JSON.parse(JSON.stringify(agents));
+    const changes = cleanStateObjects(configCopy, agentsCopy);
+    if (changes.configChanged || changes.agentsChanged) {
+      results.push({ configPath, agentsPath, config, agents, changes });
+    }
+  }
+  return results;
+}
+
+function cleanupStaleOpenAiState(paths) {
+  if (staleStateFiles().length === 0) return false;
+
+  console.log('incompatible unpatched ZCode detected; closing ZCode and removing stale OpenAI menu state...');
   killZCode();
-  const version = packageVersion(ASAR);
-  if (usableBackup(version)) { fs.copyFileSync(BACKUP, ASAR); ok = true; }
-  if (fs.existsSync(GLM_BAK)) { fs.copyFileSync(GLM_BAK, GLM); ok = true; }
-  if (!ok) fail('no version-matching backups found (nothing was ever patched for this ZCode version?)');
-  console.log('[OK] restored pristine app.asar and glm/zcode.cjs');
-  startZCode();
+  try {
+    for (const item of staleStateFiles()) {
+      const changes = cleanStateObjects(item.config, item.agents);
+      if (changes.configChanged) writeJsonAtomic(item.configPath, item.config);
+      if (changes.agentsChanged) writeJsonAtomic(item.agentsPath, item.agents);
+    }
+  } finally {
+    startZCode(paths);
+  }
+  console.log('[cleaned] stale generated OpenAI providers and their subagent overrides; OAuth credentials were retained');
+  return true;
 }
 
-function applySpans(filePath, spans, label) {
-  let s = fs.readFileSync(filePath, 'utf8');
-  const bad = [];
-  for (let i = 0; i < spans.length; i++) {
-    const n = s.split(spans[i].find).length - 1;
-    if (n !== 1) { bad.push({ span: i, matches: n }); continue; }
-    s = s.split(spans[i].find).join(spans[i].replace);
+function ensurePristineBackups(paths, version, glmSpec) {
+  const liveAppPristine = !asarHasPatch(paths.ASAR) && packageVersion(paths.ASAR) === version;
+  const appBackupUsable = usableAppBackup(paths, version);
+  const appBuildChanged = liveAppPristine && appBackupUsable &&
+    fileSha256(paths.ASAR) !== fileSha256(paths.BACKUP);
+  if (!appBackupUsable || appBuildChanged) {
+    if (!liveAppPristine) {
+      throw new Error('cannot create a pristine app backup from the installed app.asar');
+    }
+    copyVerified(paths.ASAR, paths.BACKUP);
+    writeMetadata(paths.BACKUP_META, version, paths.BACKUP);
   }
-  if (bad.length) {
-    fail(label + ': ' + bad.length + '/' + spans.length +
-      ' anchors failed to match uniquely (this ZCode version changed the patched code). ' +
-      'Nothing was written. Please open an issue with your ZCode version.');
+
+  const liveGlm = fs.readFileSync(paths.GLM, 'utf8');
+  const liveGlmPristine = isPristineText(liveGlm, glmSpec.spans, 'installed GLM');
+  const status = glmBackupStatus(paths, version, glmSpec);
+  const glmBuildChanged = liveGlmPristine && status === 'usable' &&
+    fileSha256(paths.GLM) !== fileSha256(paths.GLM_BAK);
+  if (status !== 'usable' || glmBuildChanged) {
+    if (!liveGlmPristine) {
+      throw new Error('cannot create a pristine GLM backup from the installed zcode.cjs');
+    }
+    copyVerified(paths.GLM, paths.GLM_BAK);
+    writeMetadata(paths.GLM_META, version, paths.GLM_BAK);
   }
-  fs.writeFileSync(filePath, s);
 }
 
-function syntaxCheck(filePath) {
-  const r = spawnSync(process.execPath, ['--check', filePath], { encoding: 'utf8' });
-  if (r.status !== 0) fail('syntax check failed after patching: ' + filePath + '\n' + r.stderr);
+function restore(paths, glmSpec) {
+  if (!fs.existsSync(paths.ASAR)) throw new Error(`app.asar not found at ${paths.ASAR}`);
+  const version = packageVersion(paths.ASAR);
+  if (!version || !usableAppBackup(paths, version)) {
+    throw new Error('no same-version pristine app.asar backup found');
+  }
+  const glmStatus = glmBackupStatus(paths, version, glmSpec);
+  if (glmStatus !== 'usable') {
+    throw new Error('no hash-verified same-version pristine GLM backup found');
+  }
+
+  killZCode();
+  try {
+    copyVerified(paths.BACKUP, paths.ASAR);
+    copyVerified(paths.GLM_BAK, paths.GLM);
+    console.log('[OK] restored same-version pristine app.asar and glm/zcode.cjs');
+  } finally {
+    startZCode(paths);
+  }
 }
 
-// Hashed bundle names change every release; find each logical bundle by a
-// stable content marker. Keep the prefix as a sanity check, but never depend
-// on the exact hash or on short minified function names.
-function findByMarker(dir, prefix, marker) {
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.startsWith(prefix)) continue;
-    const p = path.join(dir, f);
-    if (fs.readFileSync(p, 'utf8').includes(marker)) return p;
+function replaceRuntimeFiles(paths, appOutput, glmOutput, copy = copyVerified) {
+  try {
+    copy(appOutput, paths.ASAR);
+    copy(glmOutput, paths.GLM);
+  } catch (error) {
+    try {
+      copy(paths.BACKUP, paths.ASAR);
+      copy(paths.GLM_BAK, paths.GLM);
+    } catch (rollbackError) {
+      throw new Error(
+        `deployment failed and rollback also failed: ${error.message}; rollback: ${rollbackError.message}`
+      );
+    }
+    throw new Error(`deployment failed; both files were rolled back: ${error.message}`);
   }
-  fail('no bundle matching ' + prefix + '* containing marker "' + marker + '" in ' + dir);
 }
 
-function findJsByMarker(dir, marker) {
-  const matches = [];
-  for (const f of fs.readdirSync(dir)) {
-    if (!f.endsWith('.js')) continue;
-    const p = path.join(dir, f);
-    if (fs.readFileSync(p, 'utf8').includes(marker)) matches.push(p);
+function deployPrepared(paths, version, appOutput, glmOutput, glmSpec) {
+  console.log('closing ZCode...');
+  killZCode();
+  try {
+    ensurePristineBackups(paths, version, glmSpec);
+    replaceRuntimeFiles(paths, appOutput, glmOutput);
+    console.log('[deployed] app.asar and glm/zcode.cjs as one verified transaction');
+  } finally {
+    startZCode(paths);
   }
-  if (matches.length === 1) return matches[0];
-  fail('expected exactly one bundle containing marker "' + marker + '" in ' + dir + ', found ' + matches.length);
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(`self-test failed: ${message}`);
+}
+
+function selfTest() {
+  const spec = JSON.parse(fs.readFileSync(path.join(__dirname, 'patch-spec.json'), 'utf8'));
+  const glmSpec = JSON.parse(fs.readFileSync(path.join(__dirname, 'glm-spec.json'), 'utf8'));
+  const oauthAdapter = spec['out/host/index.js'].find(span =>
+    span.replace.includes('var openaiSlotPath=')
+  );
+  assert(oauthAdapter &&
+    oauthAdapter.replace.includes('var openaiSlotPath=Dn(wt(),"openai-oauth-result.json")') &&
+    !oauthAdapter.replace.includes('C:/Users/'),
+    'OAuth callback handoff uses the current ZCode data directory');
+
+  const codexStoreGuard = glmSpec.spans.find(span =>
+    span.replace.includes('se=cdx?!1:P?.store')
+  );
+  assert(codexStoreGuard &&
+    codexStoreGuard.replace.indexOf('se=cdx?!1:P?.store') <
+      codexStoreGuard.replace.indexOf('te("reasoning.encrypted_content")'),
+    'Codex adapter forces store=false before building reasoning continuity');
+  const memoryStream = glmSpec.spans.find(span =>
+    span.replace.includes('projectMemoryStreamText')
+  );
+  assert(memoryStream &&
+    memoryStream.replace.includes('e.streamText(t)') &&
+    memoryStream.replace.includes('case"finish"') &&
+    memoryStream.replace.includes('case"error"'),
+    'Project Memory uses Codex streaming and collects terminal events');
+  const collectorStart = memoryStream.replace.indexOf('async function cgt(');
+  const collectorEnd = memoryStream.replace.indexOf('async function pgt(', collectorStart);
+  assert(collectorStart >= 0 && collectorEnd > collectorStart,
+    'Project Memory stream collector can be isolated for execution tests');
+  const collectProjectMemory = Function(
+    'v8', 'qV',
+    `${memoryStream.replace.slice(collectorStart, collectorEnd)};return cgt`
+  )(toolCalls => toolCalls, error => error);
+  const glmText = JSON.stringify(glmSpec);
+  assert(!glmText.includes('"gpt-5.6-luna"') &&
+    !glmSpec.spans.some(span => span.find.startsWith('function m5(')),
+    'Subagent validation has no hardcoded OpenAI model reasoning table');
+  const builtinProviderFilter = glmSpec.spans.find(span => span.find.startsWith('function RTt('));
+  assert(builtinProviderFilter &&
+    builtinProviderFilter.replace.includes('e===gs.openai') &&
+    builtinProviderFilter.replace.includes('e===gs.openaiCodingPlan') &&
+    builtinProviderFilter.replace.includes('e===gs.openaiStartPlan'),
+    'GLM workspace catalog admits all built-in OpenAI provider IDs');
+  const reasoningLevelsSpan = glmSpec.spans.find(span => span.find.startsWith('function uOi('));
+  const reasoningLevels = Function(`${reasoningLevelsSpan?.replace};return uOi`)();
+  assert(JSON.stringify(reasoningLevels({ reasoning: { levels: [{ value: 'max' }] } })) === '["max"]' &&
+    JSON.stringify(reasoningLevels({ reasoning: { levels: { max: {}, ultra: {} } } })) === '["max","ultra"]',
+    'GLM reads protocol-array and internal-object reasoning level formats');
+
+  const dynamic = spec['out/host/index.js'].find(span =>
+    span.find.startsWith('async loadSinglePresetProvider')
+  ).replace;
+  const makerStart = dynamic.indexOf(',mk=') + 1;
+  const makerEnd = dynamic.indexOf(',m2=', makerStart);
+  assert(makerStart > 0 && makerEnd > makerStart, 'dynamic model builder is present');
+  const makeModel = Function(`let ${dynamic.slice(makerStart, makerEnd)};return mk`)();
+  const visible = model => model && model.supported_in_api !== false &&
+    model.visibility !== 'hide' && typeof model.slug === 'string' && model.slug.length > 0;
+  const catalog = [
+    {
+      slug: 'gpt-fixture-a', display_name: 'GPT Fixture A', context_window: 111000,
+      supported_reasoning_levels: [{ effort: 'low' }, { effort: 'preview' }],
+      default_reasoning_level: 'preview', input_modalities: ['text', 'image'],
+      visibility: 'list', supported_in_api: true,
+    },
+    {
+      slug: 'gpt-fixture-b', display_name: 'GPT Fixture B', context_window: 222000,
+      supported_reasoning_levels: ['medium'], default_reasoning_level: 'medium',
+      input_modalities: ['text'], visibility: 'list', supported_in_api: true,
+    },
+    { slug: 'gpt-reserve', visibility: 'hide', supported_in_api: true },
+    { slug: 'not-in-api', visibility: 'list', supported_in_api: false },
+  ];
+  const models = catalog.filter(visible).map(model => makeModel(model, true));
+  assert(models.length === 2, 'hidden and unsupported models are filtered');
+  assert(models[0].contextWindow === 111000 && models[1].contextWindow === 222000,
+    'each catalog context_window is propagated independently');
+  assert(models[0].catalogContextWindow === 111000 &&
+    models[1].catalogContextWindow === 222000,
+    'official context baselines are attached to catalog models');
+  assert(makeModel(catalog[0]).catalogContextWindow === undefined,
+    'network fallback does not masquerade as an official baseline');
+  assert(models[0].modalities.input.includes('image'), 'catalog input modalities are propagated');
+  assert(models[0].reasoning.defaultLevel === 'preview' &&
+    models[0].reasoning.levels.preview.openai.set[0].path[0] === 'store' &&
+    models[0].reasoning.levels.preview.openai.set[0].value === false &&
+    models[0].reasoning.levels.preview.openai.set[1].path[0] === 'reasoningEffort' &&
+    models[0].reasoning.levels.preview.openai.set[1].value === 'preview',
+    'new catalog reasoning levels propagate without source model tables');
+  assert(!dynamic.includes('400000') && !dynamic.includes('maxOutputTokens'),
+    'OAuth models do not use the old 400k/128k limits');
+  assert(dynamic.includes('visibility!=="hide"') &&
+    dynamic.includes('fetchFreshOpenAiCatalogModel'),
+    'runtime filters hidden models and exposes fresh targeted lookup');
+  const independentOpenAiLoad = spec['out/host/index.js'].find(span =>
+    span.replace.includes('loadSinglePresetProvider([],"openai"')
+  );
+  const skipDuplicateOpenAiLoad = spec['out/host/index.js'].find(span =>
+    span.replace.includes('Bj.filter(u=>u!=="openai")')
+  );
+  assert(independentOpenAiLoad && skipDuplicateOpenAiLoad,
+    'OpenAI preset loads before and independently of the Z.ai client-config service');
+  assert(dynamic.includes('c.every(x=>Number.isInteger(x.context_window)&&x.context_window>0)'),
+    'official catalog sync rejects incomplete context metadata instead of inventing a baseline');
+
+  const reasoningOverride = glmSpec.spans.find(span => span.find.startsWith('function abt('));
+  assert(reasoningOverride &&
+    reasoningOverride.replace.indexOf('t.reasoning){') <
+      reasoningOverride.replace.indexOf('t.reasoningProfile===Rle'),
+    'explicit persisted reasoning metadata precedes model-name heuristics');
+  const buildReasoningOverride = Function(
+    'Rle', 't4', 'bB', 'z6', 'uOi', 'cOi', 'dOi', 'lOi', 'wOi',
+    'Eve', 'Z$', 'jX', 'Cve', 'Ave', 'Tve', 's',
+    `${reasoningOverride.replace};return abt`
+  );
+  const projectReasoning = buildReasoningOverride(
+    Symbol('profile'), () => true, () => false, () => false,
+    model => model.reasoning.levels.map(level => level.value),
+    options => options,
+    (provider, model) => model.reasoning.providerOptionsByLevel,
+    (level, levels) => levels.includes(level) ? level : undefined,
+    () => undefined, () => ({}), () => ({}), () => ({}), () => ({}),
+    () => ({}), () => ({}), value => value
+  )({ kind: 'openai' }, {
+    modelId: 'gpt-new-name',
+    reasoning: {
+      enabled: true,
+      defaultLevel: 'preview',
+      levels: [{ value: 'preview' }],
+      providerOptionsByLevel: { preview: { openai: { store: false, reasoningEffort: 'preview' } } },
+    },
+  });
+  assert(projectReasoning.supportsReasoning === true &&
+    projectReasoning.reasoning.levels.length === 1 &&
+    projectReasoning.reasoning.levels[0] === 'preview' &&
+    projectReasoning.reasoning.providerOptionsByLevel.preview.openai.reasoningEffort === 'preview',
+    'Subagent catalog overlay consumes dynamic persisted reasoning variants');
+
+  const mergeOverride = spec['out/host/index.js'].find(span =>
+    span.replace.includes('e.providerId===te.openai||e.providerId===te.openaiCodingPlan')
+  );
+  assert(mergeOverride && mergeOverride.replace.includes('catalogContextWindow') &&
+    mergeOverride.replace.includes('replaceLocalModifiedWithAuthoritative:!0'),
+    'OpenAI merge uses official baselines while refreshing authoritative capabilities');
+  const mergeModels = Function('te', 'Pse', 'kse', 'Wh', 'nse',
+    `return function(e){${mergeOverride.replace}}`
+  )(
+    { openai: 'openai', openaiCodingPlan: 'openai-coding', openaiStartPlan: 'openai-start' },
+    options => options.authoritativeModels,
+    entries => entries,
+    model => typeof model === 'string' ? model : model.id,
+    (target, seen, entries) => target.push(...entries)
+  );
+  const merged = mergeModels({
+    providerId: 'openai-coding',
+    incoming: { models: [
+      { id: 'a', contextWindow: 333000, catalogContextWindow: 333000, reasoning: { official: 2 } },
+      { id: 'b', contextWindow: 444000, catalogContextWindow: 444000, reasoning: { official: 2 } },
+    ] },
+    existing: { models: [
+      { id: 'a', contextWindow: 111000, catalogContextWindow: 111000, reasoning: { official: 1 } },
+      { id: 'b', contextWindow: 555000, catalogContextWindow: 222000, reasoning: { official: 1 } },
+    ] },
+  });
+  assert(merged[0].contextWindow === 333000 && merged[0].catalogContextWindow === 333000,
+    'unmodified context follows a changed official baseline');
+  assert(merged[1].contextWindow === 555000 && merged[1].catalogContextWindow === 444000 &&
+    merged[1].reasoning.official === 2,
+    'ordinary refresh preserves only manual context while updating official capabilities');
+  const fallbackExisting = [{ id: 'a', contextWindow: 123000, reasoning: { cached: true } }];
+  const fallbackMerged = mergeModels({
+    providerId: 'openai-coding',
+    incoming: { models: [{ id: 'a', contextWindow: 272000 }] },
+    existing: { models: fallbackExisting },
+  });
+  assert(JSON.stringify(fallbackMerged) === JSON.stringify(fallbackExisting),
+    'catalog failure preserves the last persisted model catalog');
+
+  const repairSpan = spec['out/host/index.js'].find(span =>
+    span.replace.includes('async repairOpenAiContextWindow(q)')
+  );
+  const repairSource = repairSpan?.replace.match(
+    /(async repairOpenAiContextWindow\(q\)\{[\s\S]*?\}),async refreshCodingPlanApiKey/
+  )?.[1];
+  assert(repairSource, 'targeted context repair method is present');
+  function createRepairFixture(providerModels, fetchModel) {
+    let providers = [{ id: 'openai-coding', models: JSON.parse(JSON.stringify(providerModels)) }];
+    let fetchCount = 0;
+    let writeCount = 0;
+    const repair = Function('te', 'a', 'xi', 'So', 'us', 'D', 'g',
+      `return {${repairSource}}.repairOpenAiContextWindow`
+    )(
+      { openai: 'openai', openaiCodingPlan: 'openai-coding', openaiStartPlan: 'openai-start' },
+      { async fetchFreshOpenAiCatalogModel(modelId) { fetchCount += 1; return fetchModel(modelId); } },
+      operation => operation(),
+      async () => JSON.parse(JSON.stringify(providers)),
+      async value => { providers = value; writeCount += 1; },
+      () => {},
+      new Set()
+    );
+    return {
+      repair,
+      get providers() { return providers; },
+      get fetchCount() { return fetchCount; },
+      get writeCount() { return writeCount; },
+    };
+  }
+  const repairFixture = createRepairFixture([
+    { id: 'sol', contextWindow: 777000, catalogContextWindow: 272000 },
+    { id: 'luna', contextWindow: 888000, catalogContextWindow: 272000, reasoning: { keep: true } },
+  ], modelId => modelId === 'luna' ? { slug: 'luna', context_window: 272000 } : null);
+  const siblingBefore = JSON.stringify(repairFixture.providers[0].models[0]);
+  return Promise.resolve().then(async () => {
+    const streamed = await collectProjectMemory({
+      providerId: 'builtin:openai-coding-plan',
+      async *streamText() {
+        yield { type: 'text_delta', text: 'hello ' };
+        yield { type: 'text_delta', text: 'world' };
+        yield { type: 'tool_call', toolCall: { id: 'tool-1', name: 'remember' } };
+        yield { type: 'tool_call', toolCall: { id: 'tool-1', name: 'remember' } };
+        yield { type: 'finish', finishReason: 'tool-calls', usage: { totalTokens: 12 } };
+      },
+    }, {});
+    assert(streamed.text === 'hello world' && streamed.finishReason === 'tool-calls' &&
+      streamed.usage.totalTokens === 12 && streamed.toolCalls.length === 1,
+      'Project Memory aggregates OpenAI stream text, usage, and deduplicated tool calls');
+
+    let generated = false;
+    const nonOpenAi = await collectProjectMemory({
+      providerId: 'custom:test',
+      async generateText() { generated = true; return { text: 'fallback' }; },
+    }, {});
+    assert(generated && nonOpenAi.text === 'fallback',
+      'Project Memory keeps generateText for non-OpenAI providers');
+
+    let streamError;
+    try {
+      await collectProjectMemory({
+        providerId: 'builtin:openai-coding-plan',
+        async *streamText() { yield { type: 'error', error: new Error('stream failed') }; },
+      }, {});
+    } catch (error) {
+      streamError = error;
+    }
+    assert(streamError?.message === 'stream failed',
+      'Project Memory propagates OpenAI stream error events');
+
+    let missingFinish;
+    try {
+      await collectProjectMemory({
+        providerId: 'builtin:openai-coding-plan',
+        async *streamText() { yield { type: 'text_delta', text: 'partial' }; },
+      }, {});
+    } catch (error) {
+      missingFinish = error;
+    }
+    assert(missingFinish?.message === 'Project Memory stream ended before finish',
+      'Project Memory rejects truncated streams without a finish event');
+
+    return repairFixture.repair({
+      providerId: 'openai-coding', modelId: 'luna', requestId: 'request-1',
+    });
+  }).then(async repaired => {
+    assert(repaired === true && repairFixture.writeCount === 1,
+      'context error repair writes one provider transaction');
+    assert(repairFixture.providers[0].models[1].contextWindow === 272000 &&
+      repairFixture.providers[0].models[1].catalogContextWindow === 272000 &&
+      repairFixture.providers[0].models[1].reasoning.keep === true,
+      'context error repair restores only the current model context');
+    assert(JSON.stringify(repairFixture.providers[0].models[0]) === siblingBefore,
+      'context error repair leaves sibling models byte-for-byte unchanged');
+    await repairFixture.repair({
+      providerId: 'openai-coding', modelId: 'luna', requestId: 'request-1',
+    });
+    assert(repairFixture.fetchCount === 1 && repairFixture.writeCount === 1,
+      'one request triggers at most one catalog repair');
+
+    const smaller = createRepairFixture([
+      { id: 'luna', contextWindow: 200000, catalogContextWindow: 272000 },
+    ], () => ({ slug: 'luna', context_window: 272000 }));
+    assert(await smaller.repair({
+      providerId: 'openai-coding', modelId: 'luna', requestId: 'request-2',
+    }) === false && smaller.writeCount === 0 &&
+      smaller.providers[0].models[0].contextWindow === 200000,
+    'targeted repair never increases a smaller user context');
+
+    const unavailable = createRepairFixture([
+      { id: 'luna', contextWindow: 888000, catalogContextWindow: 272000 },
+    ], async () => { throw new Error('catalog unavailable'); });
+    assert(await unavailable.repair({
+      providerId: 'openai-coding', modelId: 'luna', requestId: 'request-3',
+    }) === false && unavailable.writeCount === 0,
+    'catalog failure does not guess or write a context value');
+
+    const failureBoundary = spec['out/host/index.js'].find(span =>
+      span.replace.includes('repairOpenAiContextWindow({providerId:nt,modelId:mt,requestId:vn})')
+    );
+    assert(failureBoundary && failureBoundary.replace.includes('_e(pe.reason)==="context_exceeded"') &&
+      !failureBoundary.replace.includes('Gr(pe.statusCode)===400'),
+      'only normalized context failures trigger catalog repair');
+
+    const iconOverride = spec['out/renderer/assets/styles-C2WGZ-SY.js'].find(span =>
+      span.replace.includes('CBe={[Ii]:SBe,zai:N_,openai:')
+    );
+    assert(iconOverride &&
+      iconOverride.replace.includes('backgroundColor:`currentColor`') &&
+      iconOverride.replace.includes('maskImage:`url("${n}")`') &&
+      !iconOverride.replace.includes('%2310A37F'),
+      'OpenAI icon follows the current theme color');
+
+    for (const rel of ['out/host/index.js', 'out/main/index.js', 'out/scheduler/index.js']) {
+      const oauthPreset = spec[rel].find(span => span.replace.includes('name:"OpenAI - OAuth"')).replace;
+      assert(oauthPreset.includes('contextWindow:272000'), `${rel} fallback context is conservative`);
+      assert(oauthPreset.includes('reasoningEffort'), `${rel} fallback has reasoning metadata`);
+    }
+
+  const config = { provider: {
+    'builtin:openai-coding-plan': { generated: true },
+    'custom:keep': { generated: false },
+  } };
+  const agents = {
+    builtInModelOverrides: {
+      Explore: 'custom:builtin%3Aopenai-coding-plan:gpt-5.6-luna',
+      judge: 'custom:keep:model',
+    },
+    builtInThoughtLevelOverrides: { Explore: 'medium', judge: 'high' },
+  };
+  const cleaned = cleanStateObjects(config, agents);
+  assert(cleaned.configChanged && cleaned.agentsChanged, 'stale state is detected');
+  assert(config.provider['custom:keep'] && !config.provider['builtin:openai-coding-plan'],
+    'cleanup removes only generated OpenAI providers');
+  assert(agents.builtInModelOverrides.judge && !agents.builtInModelOverrides.Explore,
+    'cleanup preserves unrelated agent model overrides');
+  assert(agents.builtInThoughtLevelOverrides.judge && !agents.builtInThoughtLevelOverrides.Explore,
+    'cleanup removes only the paired thought override');
+
+  assert(classifyGlmBackupFacts({
+    exists: true, pristine: true, metadataHashMatches: false,
+    metaVersion: '',
+  }, '3.10.2') === 'invalid', 'legacy GLM backup without a hash is rejected');
+  assert(classifyGlmBackupFacts({
+    exists: true, pristine: true, metadataHashMatches: false,
+    metaVersion: '3.10.2',
+  }, '3.10.2') === 'invalid', 'GLM backup hash mismatch is rejected');
+  assert(classifyGlmBackupFacts({
+    exists: true, pristine: true, metadataHashMatches: true,
+    metaVersion: '3.10.1',
+  }, '3.10.2') === 'invalid', 'cross-version GLM backup is rejected');
+
+  const hashFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-hash-test-'));
+  const hashFixture = path.join(hashFixtureDir, 'backup');
+  try {
+    fs.writeFileSync(hashFixture, 'pristine');
+    assert(!metadataHashMatches({}, hashFixture), 'backup without SHA-256 metadata is rejected');
+    const hash = fileSha256(hashFixture);
+    assert(metadataHashMatches({ sha256: hash }, hashFixture), 'matching backup SHA-256 is accepted');
+    fs.writeFileSync(hashFixture, 'tampered');
+    assert(!metadataHashMatches({ sha256: hash }, hashFixture), 'tampered backup is rejected');
+  } finally {
+    fs.rmSync(hashFixtureDir, { recursive: true, force: true });
+  }
+
+  const transactionPaths = {
+    ASAR: 'live-app', GLM: 'live-glm', BACKUP: 'backup-app', GLM_BAK: 'backup-glm',
+  };
+  const transactionFiles = {
+    'new-app': 'new-app', 'new-glm': 'new-glm',
+    'live-app': 'old-app', 'live-glm': 'old-glm',
+    'backup-app': 'old-app', 'backup-glm': 'old-glm',
+  };
+  let transactionError;
+  try {
+    replaceRuntimeFiles(transactionPaths, 'new-app', 'new-glm', (source, destination) => {
+      if (source === 'new-glm') throw new Error('second replacement failed');
+      transactionFiles[destination] = transactionFiles[source];
+    });
+  } catch (error) {
+    transactionError = error;
+  }
+  assert(transactionError?.message.includes('both files were rolled back') &&
+    transactionFiles['live-app'] === 'old-app' && transactionFiles['live-glm'] === 'old-glm',
+    'failure between runtime replacements rolls back both files');
+
+  let rollbackError;
+  try {
+    replaceRuntimeFiles(transactionPaths, 'new-app', 'new-glm', source => {
+      if (source === 'new-glm') throw new Error('deployment failed');
+      if (source === 'backup-app') throw new Error('rollback failed');
+    });
+  } catch (error) {
+    rollbackError = error;
+  }
+  assert(rollbackError?.message.includes('deployment failed and rollback also failed'),
+    'rollback failure is reported explicitly');
+
+  assert(patchText('a', [
+    { find: 'a', replace: 'b' },
+    { find: 'b', replace: 'c' },
+  ], 'fixture') === 'c', 'spans are validated sequentially');
+
+    console.log('[OK] self-test: dynamic catalog, context repair, reasoning, cleanup, and backups');
+  });
 }
 
 async function main() {
-  if (RESTORE) return restore();
-  console.log('ZCode install:', INSTALL);
-  if (!fs.existsSync(ASAR)) fail('app.asar not found at ' + ASAR);
-  if (!fs.existsSync(GLM)) fail('resources/glm/zcode.cjs not found');
+  if (SELF_TEST) return selfTest();
+  if (dirIdx >= 0 && !REQUESTED_INSTALL) throw new Error('--dir requires a path');
 
-  // idempotent: if a previous patched build is present, restore the matching pristine backup first
-  const appVersion = packageVersion(ASAR);
-  if (!DRY && usableBackup(appVersion)) {
-    const cur = fs.readFileSync(ASAR);
-    if (cur.includes('OpenAiOAuthAdapter')) {
-      console.log('previous patched build detected; restoring version-matching pristine backup first...');
-      killZCode();
-      fs.copyFileSync(BACKUP, ASAR);
-    }
-  }
-  if (!DRY && fs.existsSync(GLM_BAK)) {
-    if (fs.readFileSync(GLM, 'utf8').includes('chatgpt.com')) {
-      fs.copyFileSync(GLM_BAK, GLM);
-    }
-  }
-
+  const install = REQUESTED_INSTALL || findInstall();
+  const paths = installPaths(install);
   const spec = JSON.parse(fs.readFileSync(path.join(__dirname, 'patch-spec.json'), 'utf8'));
   const glmSpec = JSON.parse(fs.readFileSync(path.join(__dirname, 'glm-spec.json'), 'utf8'));
 
-  const work = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-'));
-  console.log('extracting app.asar ->', work);
-  asar.extractAll(ASAR, work);
+  console.log('ZCode install:', install);
+  if (!fs.existsSync(paths.ASAR)) throw new Error(`app.asar not found at ${paths.ASAR}`);
+  if (!fs.existsSync(paths.GLM)) throw new Error('resources/glm/zcode.cjs not found');
+  if (RESTORE) return restore(paths, glmSpec);
 
-  const assets = path.join(work, 'out', 'renderer', 'assets');
-  const resolve = {
-    'out/renderer/assets/styles-C2WGZ-SY.js': () =>
-      findJsByMarker(assets, 'function SLt({selectedNavItem:e'),
-    'out/renderer/assets/src-C3so_Fno.js': () =>
-      findJsByMarker(assets, 'rootDomain:`z.ai`'),
-    'out/host/chunk-EGJBTUMC.js': () =>
-      findJsByMarker(path.join(work, 'out', 'host'), 'convertModelProviderConfigToZCodeProviderInput'),
-  };
+  const version = packageVersion(paths.ASAR);
+  if (!version) throw new Error('could not read the installed ZCode package version');
+  const liveAppPatched = asarHasPatch(paths.ASAR);
+  let stageDir;
 
-  for (const [rel, spans] of Object.entries(spec)) {
-    const target = resolve[rel] ? resolve[rel]() : path.join(work, rel);
-    if (!fs.existsSync(target)) fail('missing expected file: ' + rel);
-    if (DRY) {
-      const s = fs.readFileSync(target, 'utf8');
-      const bad = spans.filter(sp => s.split(sp.find).length - 1 !== 1);
-      if (bad.length) fail(rel + ': ' + bad.length + '/' + spans.length + ' anchors do not match this ZCode version');
-      console.log('[ok] ' + rel + ': ' + spans.length + ' anchors');
-    } else {
-      applySpans(target, spans, rel);
-      syntaxCheck(target);
-      console.log('[patched] ' + rel + ': ' + spans.length + ' spans');
+  try {
+    const appSource = liveAppPatched
+      ? (usableAppBackup(paths, version) ? paths.BACKUP : null)
+      : paths.ASAR;
+    if (!appSource) {
+      throw new Error('patched app.asar detected, but no same-version pristine app backup is available');
     }
+    const glmSource = selectGlmSource(paths, version, glmSpec);
+
+    stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-'));
+    const extractDir = path.join(stageDir, 'app');
+    const appOutput = path.join(stageDir, 'app.asar.patched');
+    const glmOutput = path.join(stageDir, 'zcode.patched.cjs');
+    console.log(`preparing from pristine ZCode ${version} sources in`, stageDir);
+    stageAsarSource(appSource, paths.APP_UNPACKED, stageDir, extractDir);
+
+    const assets = path.join(extractDir, 'out', 'renderer', 'assets');
+    const resolve = {
+      'out/renderer/assets/styles-C2WGZ-SY.js': () =>
+        findJsByMarker(assets, 'function SLt({selectedNavItem:e'),
+      'out/renderer/assets/src-C3so_Fno.js': () =>
+        findJsByMarker(assets, 'rootDomain:`z.ai`'),
+      'out/host/chunk-EGJBTUMC.js': () =>
+        findJsByMarker(path.join(extractDir, 'out', 'host'),
+          'convertModelProviderConfigToZCodeProviderInput'),
+    };
+
+    for (const [relative, spans] of Object.entries(spec)) {
+      const target = resolve[relative] ? resolve[relative]() : path.join(extractDir, relative);
+      if (!fs.existsSync(target)) {
+        throw compatibilityError(`missing expected file: ${relative}`);
+      }
+      applySpans(target, spans, relative);
+      syntaxCheck(target);
+      console.log(`[prepared] ${relative}: ${spans.length} spans`);
+    }
+
+    copyVerified(glmSource, glmOutput);
+    applySpans(glmOutput, glmSpec.spans, 'resources/glm/zcode.cjs');
+    syntaxCheck(glmOutput);
+    console.log(`[prepared] resources/glm/zcode.cjs: ${glmSpec.spans.length} spans`);
+
+    console.log('packing staged app.asar...');
+    await asar.createPackageWithOptions(extractDir, appOutput, {
+      unpackDir: '**/{node-pty,ssh2}/**',
+    });
+    if (packageVersion(appOutput) !== version || !asarHasPatch(appOutput)) {
+      throw new Error('staged app.asar verification failed');
+    }
+
+    if (DRY) {
+      console.log('\ndry-run: all anchors, syntax checks, and isolated repack passed; live files were untouched.');
+      return;
+    }
+
+    if (NO_DEPLOY) {
+      const appDestination = `${paths.ASAR}.patched`;
+      const glmDestination = `${paths.GLM}.patched`;
+      copyVerified(appOutput, appDestination);
+      const unpackedOutput = `${appOutput}.unpacked`;
+      const unpackedDestination = `${appDestination}.unpacked`;
+      fs.rmSync(unpackedDestination, { recursive: true, force: true });
+      if (fs.existsSync(unpackedOutput)) fs.cpSync(unpackedOutput, unpackedDestination, { recursive: true });
+      copyVerified(glmOutput, glmDestination);
+      console.log(`[packed] ${appDestination}`);
+      console.log(`[packed] ${glmDestination}`);
+      console.log('deploy skipped; live files were untouched.');
+      return;
+    }
+
+    deployPrepared(paths, version, appOutput, glmOutput, glmSpec);
+    console.log('\nDone. ZCode restarted. Open Settings -> Model Providers -> OpenAI.');
+  } catch (error) {
+    if (error && error.code === 'ZCODE_PATCH_INCOMPATIBLE' &&
+        !DRY && !NO_DEPLOY && !liveAppPatched) {
+      cleanupStaleOpenAiState(paths);
+    }
+    throw error;
+  } finally {
+    if (stageDir) fs.rmSync(stageDir, { recursive: true, force: true });
   }
-
-  if (DRY) {
-    const s = fs.readFileSync(GLM, 'utf8');
-    const bad = glmSpec.spans.filter(sp => s.split(sp.find).length - 1 !== 1);
-    if (bad.length) fail('glm/zcode.cjs: ' + bad.length + '/' + glmSpec.spans.length + ' anchors do not match');
-    console.log('[ok] resources/glm/zcode.cjs: ' + glmSpec.spans.length + ' anchors');
-    console.log('\ndry-run: all anchors match.');
-    fs.rmSync(work, { recursive: true, force: true });
-    return;
-  }
-
-  if (!fs.existsSync(GLM_BAK)) fs.copyFileSync(GLM, GLM_BAK);
-  applySpans(GLM, glmSpec.spans, 'zcode.cjs');
-  syntaxCheck(GLM);
-  console.log('[patched] resources/glm/zcode.cjs: ' + glmSpec.spans.length + ' spans');
-
-  console.log('packing app.asar...');
-  const out = ASAR + '.patched';
-  await asar.createPackageWithOptions(work, out, { unpackDir: '**/{node-pty,ssh2}/**' });
-  fs.rmSync(work, { recursive: true, force: true });
-
-  if (NO_DEPLOY) {
-    console.log('[packed] ' + out + ' (deploy skipped)');
-    return;
-  }
-
-  console.log('closing ZCode...');
-  killZCode();
-  if (!usableBackup(appVersion)) {
-    fs.copyFileSync(ASAR, BACKUP);
-    fs.writeFileSync(BACKUP_META, JSON.stringify({ version: appVersion, savedAt: new Date().toISOString() }, null, 2) + '\n');
-  }
-  fs.copyFileSync(out, ASAR);
-  // verify the swap landed byte-for-byte before restarting
-  const a = fs.readFileSync(ASAR), b = fs.readFileSync(out);
-  if (a.length !== b.length || !a.equals(b)) fail('deploy verification failed (app.asar differs from packed output). Re-run patch.bat.');
-  fs.rmSync(out, { force: true });
-  console.log('[deployed] app.asar (pristine backup kept as app.asar.bak-pristine)');
-  startZCode();
-  console.log('\nDone. ZCode restarted. Open Settings -> Model Providers -> OpenAI -> Connect.');
 }
 
-main().catch(e => fail(e && e.stack || String(e)));
+main().catch(error => {
+  console.error('\n[FAIL] ' + (error && error.stack || String(error)));
+  process.exitCode = 1;
+});
