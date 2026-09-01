@@ -1,0 +1,134 @@
+{
+  "schemaVersion": 1,
+  "id": "zcode-3.10.2",
+  "version": "3.10.2",
+  "appSpec": "patch-spec.json",
+  "appSpecSha256": "ceb461c74ed8d89b5054917823f32eaccd0de9a38516f86539845ab69c0df9d0",
+  "glmSpec": "glm-spec.json",
+  "glmSpecSha256": "986c3190082daf09c05bc843852a4358e1e4517869c6d4727bf3a8827be5a622",
+  "appMarker": "OpenAiOAuthAdapter",
+  "targets": [
+    {
+      "id": "host.main",
+      "specKey": "out/host/index.js",
+      "path": "out/host/index.js",
+      "postconditions": [
+        "OpenAiOAuthAdapter",
+        "repairOpenAiContextWindow",
+        "catalogContextWindow",
+        "loadSinglePresetProvider([],\"openai\""
+      ]
+    },
+    {
+      "id": "host.protocol",
+      "specKey": "out/host/chunk-EGJBTUMC.js",
+      "resolver": {
+        "type": "marker-js",
+        "directory": "out/host",
+        "marker": "convertModelProviderConfigToZCodeProviderInput"
+      },
+      "postconditions": [
+        "catalogContextWindow",
+        "openaiCodingPlan"
+      ]
+    },
+    {
+      "id": "main.models",
+      "specKey": "out/main/index.js",
+      "path": "out/main/index.js",
+      "postconditions": [
+        "OpenAI - OAuth"
+      ]
+    },
+    {
+      "id": "scheduler.models",
+      "specKey": "out/scheduler/index.js",
+      "path": "out/scheduler/index.js",
+      "postconditions": [
+        "OpenAI - OAuth",
+        "openai-coding-plan"
+      ]
+    },
+    {
+      "id": "renderer.settings",
+      "specKey": "out/renderer/assets/styles-C2WGZ-SY.js",
+      "resolver": {
+        "type": "marker-js",
+        "directory": "out/renderer/assets",
+        "marker": "function SLt({selectedNavItem:e"
+      },
+      "postconditions": [
+        "openaiCodingPlan",
+        "maskImage:`url(\"${n}\")`"
+      ]
+    },
+    {
+      "id": "renderer.providers",
+      "specKey": "out/renderer/assets/src-C3so_Fno.js",
+      "resolver": {
+        "type": "marker-js",
+        "directory": "out/renderer/assets",
+        "marker": "rootDomain:`z.ai`"
+      },
+      "postconditions": [
+        "openaiCodingPlan"
+      ]
+    },
+    {
+      "id": "preload.coding-plan-webview",
+      "specKey": "out/preload/codingPlanWebview.cjs",
+      "path": "out/preload/codingPlanWebview.cjs",
+      "postconditions": [
+        "openaiCodingPlan",
+        "openai-coding-plan"
+      ]
+    },
+    {
+      "id": "preload.cua-permission-panel",
+      "specKey": "out/preload/cuaPermissionPanel.cjs",
+      "path": "out/preload/cuaPermissionPanel.cjs",
+      "postconditions": [
+        "openaiCodingPlan",
+        "openai-coding-plan"
+      ]
+    },
+    {
+      "id": "preload.javascript-dialog",
+      "specKey": "out/preload/embeddedBrowserJavaScriptDialog.cjs",
+      "path": "out/preload/embeddedBrowserJavaScriptDialog.cjs",
+      "postconditions": [
+        "openaiCodingPlan",
+        "openai-coding-plan"
+      ]
+    },
+    {
+      "id": "preload.main",
+      "specKey": "out/preload/index.cjs",
+      "path": "out/preload/index.cjs",
+      "postconditions": [
+        "openaiCodingPlan",
+        "openai-coding-plan"
+      ]
+    },
+    {
+      "id": "preload.process-monitor",
+      "specKey": "out/preload/processMonitor.cjs",
+      "path": "out/preload/processMonitor.cjs",
+      "postconditions": [
+        "openaiCodingPlan",
+        "openai-coding-plan"
+      ]
+    }
+  ],
+  "glm": {
+    "path": "resources/glm/zcode.cjs",
+    "marker": "let cdx=String(this.config.url({path:\"\"})).indexOf(\"chatgpt.com\")>=0",
+    "postconditions": [
+      "projectMemoryStreamText",
+      "e===gs.openaiCodingPlan",
+      "if(typeof t===\"object\")return Object.keys(t)",
+      "stream\",\"include\",\"reasoning",
+      "se=cdx?!1:P?.store"
+    ]
+  }
+}

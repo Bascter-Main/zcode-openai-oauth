@@ -1,0 +1,6 @@
+{
+  "schemaVersion": 1,
+  "profiles": {
+    "3.10.2": "3.10.2/profile.json"
+  }
+}

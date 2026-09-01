@@ -4,7 +4,7 @@
 
 给 [ZCode](https://zcode.z.ai) 桌面版（Windows）内置一个 **OpenAI 模型供应商**：用 ChatGPT 订阅（Plus/Pro）OAuth 登录，直接在聊天里使用 GPT 系列模型，与原有 Z.ai / BigModel 账号互不干扰。
 
-已验证版本：ZCode 3.10.2。其他版本请先运行 `--dry-run` 验证锚点兼容性。
+已验证版本：ZCode **3.10.2**（稳定补丁基线：`v1.0.0`）。补丁器按精确版本选择兼容性 profile；未知版本不会在部署模式下静默尝试。
 
 ## 一键使用
 
@@ -21,12 +21,20 @@ patch.bat
 其他命令：
 
 ```bat
-node patch.js --dry-run    :: 只验证当前版本能否打上（不写任何文件）
-node patch.js --restore    :: 还原官方原版（从备份恢复）
+node patch.js --probe      :: 只读检查当前版本与已有 profile 的兼容性（不写安装目录、不重启 ZCode）
+node patch.js --dry-run    :: 对精确支持的版本完成完整补丁与隔离重新打包（不写安装目录）
+node patch.js --restore    :: 还原官方原版（从 hash 校验过的同版本备份恢复）
 node patch.js --dir <路径> :: 指定自定义安装目录
 ```
 
-**ZCode 升级后**：官方升级会覆盖补丁。升级完成后重新跑一次 `patch.bat` 即可。补丁全部基于**内容锚点**（不依赖文件名哈希和字节偏移），只要 ZCode 没有重构相关代码就能直接打上；若某处官方实现变了，补丁器会明确报出哪些锚点失效且不会写出坏包。
+**ZCode 升级后**：官方升级会覆盖补丁。升级完成后重新运行 `patch.bat`。补丁基于**内容锚点**和精确版本 profile（不依赖固定字节偏移），每个锚点必须唯一匹配；若官方实现变了，补丁器会明确报出哪些 target/anchor 失效且不会写出坏包。
+
+### 版本兼容政策
+
+- **已验证版本**：profile 精确匹配版本号，并且所有锚点、语法检查、postcondition 和隔离重新打包全部通过，才允许部署。
+- **结构候选**：新版本如果与现有 profile 的结构完全一致，可以用 `--probe` 得到报告；默认仍不自动部署。
+- **未知版本**：部署与恢复模式直接失败并说明没有 verified profile，不猜测、不做模糊替换。
+- **新增 profile**：ZCode 3.10.1/3.10.3 等版本只有在取得对应 pristine `app.asar` 与 `resources/glm/zcode.cjs` 并完成同等测试后，才加入 `profiles/index.json`。不使用 `3.10.x` 通配符。
 
 ## 实现原理
 
@@ -39,9 +47,11 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 
 ## 文件说明
 
-- `patch.js` — 补丁器（解包/打补丁/校验/打包/部署/重启）
-- `patch-spec.json` — asar 内各目标 bundle 的内容锚点补丁
-- `glm-spec.json` — agent 运行时 `resources/glm/zcode.cjs` 的内容锚点补丁
+- `patch.js` — 版本无关补丁引擎（profile 选择/解包/打补丁/校验/打包/探测/部署/重启）
+- `profiles/index.json` — 精确 ZCode 版本到 profile 的映射
+- `profiles/<版本>/profile.json` — target、marker、postcondition 和 spec 校验配置
+- `profiles/<版本>/patch-spec.json` — asar 内各目标 bundle 的内容锚点补丁
+- `profiles/<版本>/glm-spec.json` — agent 运行时 `resources/glm/zcode.cjs` 的内容锚点补丁
 - `package.json` / `package-lock.json` — 锁定补丁器使用的 asar 依赖版本
 - `patch.bat` — Windows 双击入口（首次运行自动安装依赖）
 

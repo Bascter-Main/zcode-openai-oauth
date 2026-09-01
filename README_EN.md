@@ -4,7 +4,7 @@
 
 Adds a built-in **OpenAI model provider** to the [ZCode](https://zcode.z.ai) desktop app for Windows. Sign in with a ChatGPT subscription (Plus/Pro) through OAuth and use GPT models directly in chat without affecting the existing Z.ai or BigModel account.
 
-Verified version: ZCode 3.10.2. For other versions, run `--dry-run` first to verify anchor compatibility.
+Verified version: ZCode **3.10.2** (stable patch baseline: `v1.0.0`). The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
 
 ## Quick Start
 
@@ -21,12 +21,20 @@ After ZCode restarts, open **Settings → Model Providers → OpenAI → Connect
 Additional commands:
 
 ```bat
-node patch.js --dry-run      :: Verify compatibility without writing files
-node patch.js --restore      :: Restore the pristine files from backup
+node patch.js --probe        :: Read-only compatibility inspection (does not modify the install or restart ZCode)
+node patch.js --dry-run      :: Fully patch and repack a precisely supported version without writing to the install
+node patch.js --restore      :: Restore pristine files from the hash-verified same-version backup
 node patch.js --dir <path>   :: Use a custom ZCode installation directory
 ```
 
-**After a ZCode upgrade:** the official updater will overwrite the patch. Run `patch.bat` again after the upgrade. The patch uses unique content anchors instead of bundle filename hashes or byte offsets. If ZCode changes the relevant implementation, the patcher reports the anchors that no longer match and aborts without deploying a partially patched package.
+**After a ZCode upgrade:** the official updater will overwrite the patch. Run `patch.bat` again after the upgrade. The patch uses content anchors plus exact-version profiles instead of fixed byte offsets; every anchor must match exactly once. If ZCode changes the relevant implementation, the patcher reports the affected target/anchor and aborts without deploying a partially patched package.
+
+### Version compatibility policy
+
+- **Verified version:** the profile matches the exact version and all anchors, syntax checks, postconditions, and the isolated repack pass before deployment is allowed.
+- **Structural candidate:** if a new version appears to match an existing profile, `--probe` produces a compatibility report; it still is not deployed automatically.
+- **Unknown version:** deploy and restore fail explicitly because no verified profile exists. There is no fuzzy patching or guessing.
+- **Adding a profile:** ZCode 3.10.1/3.10.3 or later can be added only after the corresponding pristine `app.asar` and `resources/glm/zcode.cjs` are available and the same test matrix passes. `3.10.x` wildcards are not used.
 
 ## How It Works
 
@@ -39,9 +47,11 @@ node patch.js --dir <path>   :: Use a custom ZCode installation directory
 
 ## Files
 
-- `patch.js` — extracts, patches, validates, repackages, deploys, and restarts ZCode
-- `patch-spec.json` — content-anchor patches for the target bundles inside `app.asar`
-- `glm-spec.json` — content-anchor patches for the agent runtime at `resources/glm/zcode.cjs`
+- `patch.js` — version-independent patch engine (profile selection, extraction, patching, validation, repacking, probing, deployment, and restart)
+- `profiles/index.json` — exact ZCode version to compatibility profile mapping
+- `profiles/<version>/profile.json` — target, marker, postcondition, and spec-checksum configuration
+- `profiles/<version>/patch-spec.json` — content-anchor patches for target bundles inside `app.asar`
+- `profiles/<version>/glm-spec.json` — content-anchor patches for the agent runtime at `resources/glm/zcode.cjs`
 - `package.json` / `package-lock.json` — locks the asar dependency version used by the patcher
 - `patch.bat` — Windows double-click entry point; installs dependencies automatically on first run
 

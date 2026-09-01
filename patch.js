@@ -3,6 +3,7 @@
  * ZCode OpenAI OAuth patcher
  *
  *   node patch.js               patch, deploy, restart ZCode
+ *   node patch.js --probe       inspect compatibility without modifying the install
  *   node patch.js --dry-run     validate and repack in a temporary directory
  *   node patch.js --no-deploy   write staged .patched files without deploying
  *   node patch.js --dir <path>  use a custom ZCode install directory
@@ -21,11 +22,14 @@ const args = process.argv.slice(2);
 const DRY = args.includes('--dry-run');
 const NO_DEPLOY = args.includes('--no-deploy');
 const RESTORE = args.includes('--restore');
+const PROBE = args.includes('--probe');
 const SELF_TEST = args.includes('--self-test');
 const dirIdx = args.indexOf('--dir');
 const REQUESTED_INSTALL = dirIdx >= 0 ? args[dirIdx + 1] : null;
 const APP_PATCH_MARKER = 'OpenAiOAuthAdapter';
 const GLM_PATCH_MARKER = 'let cdx=String(this.config.url({path:""})).indexOf("chatgpt.com")>=0';
+const PROFILE_SCHEMA_VERSION = 1;
+const PROFILE_ROOT = path.join(__dirname, 'profiles');
 const OPENAI_PROVIDER_IDS = [
   'builtin:openai',
   'builtin:openai-coding-plan',
@@ -68,16 +72,26 @@ function findInstall() {
 
 function installPaths(install) {
   const resources = path.join(install, 'resources');
-  const glmDir = path.join(resources, 'glm');
+  const glm = path.join(resources, 'glm', 'zcode.cjs');
   return {
     INSTALL: install,
     ASAR: path.join(resources, 'app.asar'),
     APP_UNPACKED: path.join(resources, 'app.asar.unpacked'),
     BACKUP: path.join(resources, 'app.asar.bak-pristine'),
     BACKUP_META: path.join(resources, 'app.asar.bak-pristine.json'),
-    GLM: path.join(glmDir, 'zcode.cjs'),
-    GLM_BAK: path.join(glmDir, 'zcode.cjs.bak-pristine'),
-    GLM_META: path.join(glmDir, 'zcode.cjs.bak-pristine.json'),
+    GLM: glm,
+    GLM_BAK: `${glm}.bak-pristine`,
+    GLM_META: `${glm}.bak-pristine.json`,
+  };
+}
+
+function applyProfilePaths(paths, profile) {
+  const glm = resolveInside(paths.INSTALL, profile.glm.path, `profile ${profile.id} GLM path`);
+  return {
+    ...paths,
+    GLM: glm,
+    GLM_BAK: `${glm}.bak-pristine`,
+    GLM_META: `${glm}.bak-pristine.json`,
   };
 }
 
@@ -101,6 +115,139 @@ function readMetadata(metaPath) {
   } catch {
     return {};
   }
+}
+
+function resolveInside(root, relativePath, label) {
+  if (typeof relativePath !== 'string' || !relativePath || path.isAbsolute(relativePath)) {
+    throw compatibilityError(`${label} must be a non-empty relative path`);
+  }
+  const resolved = path.resolve(root, relativePath);
+  const relative = path.relative(path.resolve(root), resolved);
+  if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+    throw compatibilityError(`${label} escapes its profile root`);
+  }
+  return resolved;
+}
+
+function readJsonStrict(filePath, label) {
+  try {
+    return JSON.parse(fs.readFileSync(filePath, 'utf8'));
+  } catch (error) {
+    throw compatibilityError(`${label} is not valid JSON: ${error.message}`);
+  }
+}
+
+function validateSpans(spans, label) {
+  if (!Array.isArray(spans) || spans.length === 0) {
+    throw compatibilityError(`${label} must contain at least one span`);
+  }
+  for (let index = 0; index < spans.length; index++) {
+    const span = spans[index];
+    if (!span || typeof span.find !== 'string' || span.find.length === 0 ||
+        typeof span.replace !== 'string' || span.replace.length === 0) {
+      throw compatibilityError(`${label} span ${index + 1} must have non-empty find and replace strings`);
+    }
+  }
+}
+
+function loadProfileIndex(profileRoot = PROFILE_ROOT) {
+  const index = readJsonStrict(path.join(profileRoot, 'index.json'), 'profile index');
+  if (index.schemaVersion !== PROFILE_SCHEMA_VERSION ||
+      !index.profiles || typeof index.profiles !== 'object' || Array.isArray(index.profiles)) {
+    throw compatibilityError(`profile index must use schemaVersion ${PROFILE_SCHEMA_VERSION}`);
+  }
+  for (const [version, manifestPath] of Object.entries(index.profiles)) {
+    if (!/^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?$/.test(version)) {
+      throw compatibilityError(`profile index contains an invalid exact version: ${version}`);
+    }
+    resolveInside(profileRoot, manifestPath, `profile ${version} manifest`);
+  }
+  return index;
+}
+
+function validateProfileManifest(manifest, version, profileDir, appSpec, glmSpec) {
+  if (!manifest || manifest.schemaVersion !== PROFILE_SCHEMA_VERSION ||
+      manifest.version !== version || typeof manifest.id !== 'string' || !manifest.id) {
+    throw compatibilityError(`profile ${version} manifest identity is invalid`);
+  }
+  if (!Array.isArray(manifest.targets) || manifest.targets.length === 0) {
+    throw compatibilityError(`profile ${version} must declare app targets`);
+  }
+  if (!appSpec || typeof appSpec !== 'object' || Array.isArray(appSpec)) {
+    throw compatibilityError(`profile ${version} app spec is invalid`);
+  }
+  if (!glmSpec || typeof glmSpec !== 'object' || !Array.isArray(glmSpec.spans)) {
+    throw compatibilityError(`profile ${version} GLM spec is invalid`);
+  }
+  validateSpans(glmSpec.spans, `profile ${version} GLM`);
+
+  const ids = new Set();
+  const specKeys = new Set();
+  for (const target of manifest.targets) {
+    if (!target || typeof target.id !== 'string' || !target.id || ids.has(target.id)) {
+      throw compatibilityError(`profile ${version} has a missing or duplicate target id`);
+    }
+    if (typeof target.specKey !== 'string' || !target.specKey || specKeys.has(target.specKey)) {
+      throw compatibilityError(`profile ${version} target ${target.id} has a missing or duplicate specKey`);
+    }
+    ids.add(target.id);
+    specKeys.add(target.specKey);
+    validateSpans(appSpec[target.specKey], `profile ${version} target ${target.id}`);
+    if ((typeof target.path === 'string') === Boolean(target.resolver)) {
+      throw compatibilityError(`profile ${version} target ${target.id} must declare exactly one path or resolver`);
+    }
+    if (target.path) resolveInside(profileDir, target.path, `profile ${version} target ${target.id} path`);
+    if (target.resolver) {
+      if (target.resolver.type !== 'marker-js' ||
+          typeof target.resolver.directory !== 'string' || !target.resolver.directory ||
+          typeof target.resolver.marker !== 'string' || !target.resolver.marker) {
+        throw compatibilityError(`profile ${version} target ${target.id} resolver is invalid`);
+      }
+      resolveInside(profileDir, target.resolver.directory,
+        `profile ${version} target ${target.id} resolver directory`);
+    }
+    if (!Array.isArray(target.postconditions) ||
+        target.postconditions.some(value => typeof value !== 'string' || !value)) {
+      throw compatibilityError(`profile ${version} target ${target.id} postconditions are invalid`);
+    }
+  }
+  const extraSpecKeys = Object.keys(appSpec).filter(key => !specKeys.has(key));
+  if (extraSpecKeys.length > 0) {
+    throw compatibilityError(`profile ${version} app spec has undeclared targets: ${extraSpecKeys.join(', ')}`);
+  }
+  if (!manifest.glm || typeof manifest.glm.path !== 'string' || !manifest.glm.path ||
+      typeof manifest.glm.marker !== 'string' || !manifest.glm.marker ||
+      !Array.isArray(manifest.glm.postconditions) ||
+      manifest.glm.postconditions.some(value => typeof value !== 'string' || !value)) {
+    throw compatibilityError(`profile ${version} GLM manifest is invalid`);
+  }
+}
+
+function loadProfile(version, profileRoot = PROFILE_ROOT) {
+  const index = loadProfileIndex(profileRoot);
+  const manifestRelative = index.profiles[version];
+  if (!manifestRelative) {
+    throw compatibilityError(`no verified compatibility profile for ZCode ${version}`);
+  }
+  const manifestPath = resolveInside(profileRoot, manifestRelative, `profile ${version} manifest`);
+  const profileDir = path.dirname(manifestPath);
+  const manifest = readJsonStrict(manifestPath, `profile ${version} manifest`);
+  const appSpecPath = resolveInside(profileDir, manifest.appSpec, `profile ${version} appSpec`);
+  const glmSpecPath = resolveInside(profileDir, manifest.glmSpec, `profile ${version} glmSpec`);
+  if (!/^[0-9a-f]{64}$/.test(manifest.appSpecSha256 || '') ||
+      fileSha256(appSpecPath) !== manifest.appSpecSha256 ||
+      !/^[0-9a-f]{64}$/.test(manifest.glmSpecSha256 || '') ||
+      fileSha256(glmSpecPath) !== manifest.glmSpecSha256) {
+    throw compatibilityError(`profile ${version} spec checksum mismatch`);
+  }
+  const appSpec = readJsonStrict(appSpecPath, `profile ${version} app spec`);
+  const glmSpec = readJsonStrict(glmSpecPath, `profile ${version} GLM spec`);
+  validateProfileManifest(manifest, version, profileDir, appSpec, glmSpec);
+  return { ...manifest, profileDir, appSpec, glmSpec };
+}
+
+function loadAllProfiles(profileRoot = PROFILE_ROOT) {
+  return Object.keys(loadProfileIndex(profileRoot).profiles).map(version => loadProfile(version, profileRoot));
 }
 
 function fileSha256(filePath) {
@@ -148,11 +295,13 @@ function metadataHashMatches(metadata, filePath) {
     metadata.sha256 === fileSha256(filePath);
 }
 
-function usableAppBackup(paths, version) {
+function usableAppBackup(paths, version, profile) {
   if (!fs.existsSync(paths.BACKUP) || packageVersion(paths.BACKUP) !== version ||
       asarHasPatch(paths.BACKUP)) return false;
   const metadata = readMetadata(paths.BACKUP_META);
-  return metadata.version === version && metadataHashMatches(metadata, paths.BACKUP);
+  return metadata.version === version &&
+    (!metadata.profileId || !profile || metadata.profileId === profile.id) &&
+    metadataHashMatches(metadata, paths.BACKUP);
 }
 
 function countMatches(text, needle) {
@@ -211,6 +360,30 @@ function findJsByMarker(dir, marker) {
   return matches[0];
 }
 
+function resolveProfileTarget(profile, target, extractDir) {
+  const label = `profile ${profile.id} target ${target.id}`;
+  if (target.path) return resolveInside(extractDir, target.path, `${label} path`);
+  const directory = resolveInside(extractDir, target.resolver.directory, `${label} resolver directory`);
+  return findJsByMarker(directory, target.resolver.marker);
+}
+
+function verifyPostconditions(filePath, postconditions, label) {
+  const text = fs.readFileSync(filePath, 'utf8');
+  const missing = postconditions.filter(value => !text.includes(value));
+  if (missing.length > 0) {
+    throw compatibilityError(`${label} is missing postconditions: ${missing.join(', ')}`);
+  }
+}
+
+function applyProfileTarget(profile, target, extractDir) {
+  const filePath = resolveProfileTarget(profile, target, extractDir);
+  const label = `profile ${profile.id} target ${target.id} (${path.basename(filePath)})`;
+  applySpans(filePath, profile.appSpec[target.specKey], label);
+  syntaxCheck(filePath);
+  verifyPostconditions(filePath, target.postconditions, label);
+  return filePath;
+}
+
 function sleepMs(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
@@ -241,27 +414,30 @@ function classifyGlmBackupFacts(facts, version) {
   return facts.metaVersion === version ? 'usable' : 'invalid';
 }
 
-function glmBackupStatus(paths, version, glmSpec) {
+function glmBackupStatus(paths, version, profile) {
   const exists = fs.existsSync(paths.GLM_BAK);
   const pristine = exists && isPristineText(
     fs.readFileSync(paths.GLM_BAK, 'utf8'),
-    glmSpec.spans,
+    profile.glmSpec.spans,
     'GLM pristine backup'
   );
+  const metadata = readMetadata(paths.GLM_META);
   return classifyGlmBackupFacts({
     exists,
     pristine,
-    metaVersion: readMetadata(paths.GLM_META).version || '',
+    metaVersion: metadata.version || '',
     metadataHashMatches: exists &&
-      metadataHashMatches(readMetadata(paths.GLM_META), paths.GLM_BAK),
+      (!metadata.profileId || metadata.profileId === profile.id) &&
+      metadataHashMatches(metadata, paths.GLM_BAK),
   }, version);
 }
 
-function writeMetadata(metaPath, version, sourcePath) {
+function writeMetadata(metaPath, version, sourcePath, profile) {
   const temporary = `${metaPath}.tmp-${process.pid}`;
   fs.writeFileSync(temporary, JSON.stringify({
     version,
     sha256: fileSha256(sourcePath),
+    ...profile ? { profileId: profile.id, profileSchemaVersion: profile.schemaVersion } : {},
     savedAt: new Date().toISOString(),
   }, null, 2) + '\n');
   fs.renameSync(temporary, metaPath);
@@ -280,10 +456,10 @@ function copyVerified(source, destination) {
   }
 }
 
-function selectGlmSource(paths, version, glmSpec) {
+function selectGlmSource(paths, version, profile) {
   const live = fs.readFileSync(paths.GLM, 'utf8');
-  if (!live.includes(GLM_PATCH_MARKER)) return paths.GLM;
-  const status = glmBackupStatus(paths, version, glmSpec);
+  if (!live.includes(profile.glm.marker)) return paths.GLM;
+  const status = glmBackupStatus(paths, version, profile);
   if (status === 'usable') return paths.GLM_BAK;
   throw new Error('patched GLM detected, but no hash-verified same-version pristine GLM backup is available');
 }
@@ -404,9 +580,9 @@ function cleanupStaleOpenAiState(paths) {
   return true;
 }
 
-function ensurePristineBackups(paths, version, glmSpec) {
+function ensurePristineBackups(paths, version, profile) {
   const liveAppPristine = !asarHasPatch(paths.ASAR) && packageVersion(paths.ASAR) === version;
-  const appBackupUsable = usableAppBackup(paths, version);
+  const appBackupUsable = usableAppBackup(paths, version, profile);
   const appBuildChanged = liveAppPristine && appBackupUsable &&
     fileSha256(paths.ASAR) !== fileSha256(paths.BACKUP);
   if (!appBackupUsable || appBuildChanged) {
@@ -414,12 +590,14 @@ function ensurePristineBackups(paths, version, glmSpec) {
       throw new Error('cannot create a pristine app backup from the installed app.asar');
     }
     copyVerified(paths.ASAR, paths.BACKUP);
-    writeMetadata(paths.BACKUP_META, version, paths.BACKUP);
+    writeMetadata(paths.BACKUP_META, version, paths.BACKUP, profile);
+  } else if (!readMetadata(paths.BACKUP_META).profileId) {
+    writeMetadata(paths.BACKUP_META, version, paths.BACKUP, profile);
   }
 
   const liveGlm = fs.readFileSync(paths.GLM, 'utf8');
-  const liveGlmPristine = isPristineText(liveGlm, glmSpec.spans, 'installed GLM');
-  const status = glmBackupStatus(paths, version, glmSpec);
+  const liveGlmPristine = isPristineText(liveGlm, profile.glmSpec.spans, 'installed GLM');
+  const status = glmBackupStatus(paths, version, profile);
   const glmBuildChanged = liveGlmPristine && status === 'usable' &&
     fileSha256(paths.GLM) !== fileSha256(paths.GLM_BAK);
   if (status !== 'usable' || glmBuildChanged) {
@@ -427,17 +605,19 @@ function ensurePristineBackups(paths, version, glmSpec) {
       throw new Error('cannot create a pristine GLM backup from the installed zcode.cjs');
     }
     copyVerified(paths.GLM, paths.GLM_BAK);
-    writeMetadata(paths.GLM_META, version, paths.GLM_BAK);
+    writeMetadata(paths.GLM_META, version, paths.GLM_BAK, profile);
+  } else if (!readMetadata(paths.GLM_META).profileId) {
+    writeMetadata(paths.GLM_META, version, paths.GLM_BAK, profile);
   }
 }
 
-function restore(paths, glmSpec) {
+function restore(paths, profile) {
   if (!fs.existsSync(paths.ASAR)) throw new Error(`app.asar not found at ${paths.ASAR}`);
   const version = packageVersion(paths.ASAR);
-  if (!version || !usableAppBackup(paths, version)) {
+  if (!version || !usableAppBackup(paths, version, profile)) {
     throw new Error('no same-version pristine app.asar backup found');
   }
-  const glmStatus = glmBackupStatus(paths, version, glmSpec);
+  const glmStatus = glmBackupStatus(paths, version, profile);
   if (glmStatus !== 'usable') {
     throw new Error('no hash-verified same-version pristine GLM backup found');
   }
@@ -469,15 +649,227 @@ function replaceRuntimeFiles(paths, appOutput, glmOutput, copy = copyVerified) {
   }
 }
 
-function deployPrepared(paths, version, appOutput, glmOutput, glmSpec) {
+function deployPrepared(paths, version, appOutput, glmOutput, profile) {
   console.log('closing ZCode...');
   killZCode();
   try {
-    ensurePristineBackups(paths, version, glmSpec);
+    ensurePristineBackups(paths, version, profile);
     replaceRuntimeFiles(paths, appOutput, glmOutput);
     console.log('[deployed] app.asar and glm/zcode.cjs as one verified transaction');
   } finally {
     startZCode(paths);
+  }
+}
+
+function selectPristineSources(paths, version, profile) {
+  const liveAppPatched = asarHasPatch(paths.ASAR);
+  const appSource = liveAppPatched
+    ? (usableAppBackup(paths, version, profile) ? paths.BACKUP : null)
+    : paths.ASAR;
+  if (!appSource) {
+    throw new Error('patched app.asar detected, but no same-version pristine app backup is available');
+  }
+  return {
+    appSource,
+    glmSource: selectGlmSource(paths, version, profile),
+    liveAppPatched,
+  };
+}
+
+async function prepareProfile(paths, version, profile, options = {}) {
+  const { repack = true, quiet = false } = options;
+  const sources = selectPristineSources(paths, version, profile);
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-'));
+  const extractDir = path.join(stageDir, 'app');
+  const appOutput = path.join(stageDir, 'app.asar.patched');
+  const glmOutput = path.join(stageDir, 'zcode.patched.cjs');
+  try {
+    if (!quiet) console.log(`preparing profile ${profile.id} from pristine ZCode ${version} sources in`, stageDir);
+    stageAsarSource(sources.appSource, paths.APP_UNPACKED, stageDir, extractDir);
+
+    const resolvedTargets = [];
+    for (const target of profile.targets) {
+      const filePath = applyProfileTarget(profile, target, extractDir);
+      resolvedTargets.push({ id: target.id, filePath });
+      if (!quiet) {
+        console.log(`[prepared] ${target.id} (${path.basename(filePath)}): ` +
+          `${profile.appSpec[target.specKey].length} spans`);
+      }
+    }
+
+    copyVerified(sources.glmSource, glmOutput);
+    applySpans(glmOutput, profile.glmSpec.spans, `profile ${profile.id} GLM`);
+    syntaxCheck(glmOutput);
+    verifyPostconditions(glmOutput, [profile.glm.marker, ...profile.glm.postconditions],
+      `profile ${profile.id} GLM`);
+    if (!quiet) console.log(`[prepared] GLM: ${profile.glmSpec.spans.length} spans`);
+
+    if (repack) {
+      if (!quiet) console.log('packing staged app.asar...');
+      await asar.createPackageWithOptions(extractDir, appOutput, {
+        unpackDir: '**/{node-pty,ssh2}/**',
+      });
+      if (packageVersion(appOutput) !== version || !fileIncludes(appOutput, profile.appMarker)) {
+        throw new Error('staged app.asar verification failed');
+      }
+    }
+
+    return { stageDir, extractDir, appOutput, glmOutput, resolvedTargets, ...sources };
+  } catch (error) {
+    fs.rmSync(stageDir, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function analyzeSpans(text, spans) {
+  let result = text;
+  let matched = 0;
+  const failures = [];
+  for (let index = 0; index < spans.length; index++) {
+    const count = countMatches(result, spans[index].find);
+    if (count === 1) {
+      matched += 1;
+      result = result.replace(spans[index].find, spans[index].replace);
+    } else {
+      failures.push({ anchor: index + 1, count });
+    }
+  }
+  return { result, matched, total: spans.length, failures };
+}
+
+function analyzeProfile(profile, extractDir, glmSource) {
+  const targets = [];
+  let matched = 0;
+  let total = profile.glmSpec.spans.length;
+  for (const target of profile.targets) {
+    const spans = profile.appSpec[target.specKey];
+    total += spans.length;
+    try {
+      const filePath = resolveProfileTarget(profile, target, extractDir);
+      const analysis = analyzeSpans(fs.readFileSync(filePath, 'utf8'), spans);
+      const missingPostconditions = analysis.failures.length === 0
+        ? target.postconditions.filter(value => !analysis.result.includes(value))
+        : [];
+      matched += analysis.matched;
+      targets.push({
+        id: target.id,
+        physical: path.basename(filePath),
+        matched: analysis.matched,
+        total: analysis.total,
+        failures: analysis.failures,
+        missingPostconditions,
+      });
+    } catch (error) {
+      targets.push({
+        id: target.id,
+        matched: 0,
+        total: spans.length,
+        failures: [],
+        missingPostconditions: [],
+        error: error.message,
+      });
+    }
+  }
+
+  const glmAnalysis = analyzeSpans(fs.readFileSync(glmSource, 'utf8'), profile.glmSpec.spans);
+  const glmMissing = glmAnalysis.failures.length === 0
+    ? [profile.glm.marker, ...profile.glm.postconditions]
+      .filter(value => !glmAnalysis.result.includes(value))
+    : [];
+  matched += glmAnalysis.matched;
+  return {
+    profileId: profile.id,
+    profileVersion: profile.version,
+    matched,
+    total,
+    targets,
+    glm: {
+      matched: glmAnalysis.matched,
+      total: glmAnalysis.total,
+      failures: glmAnalysis.failures,
+      missingPostconditions: glmMissing,
+    },
+  };
+}
+
+function selectUnknownProbeGlmSource(paths, version, profiles) {
+  const live = fs.readFileSync(paths.GLM, 'utf8');
+  if (!profiles.some(profile => live.includes(profile.glm.marker))) return paths.GLM;
+  for (const profile of profiles) {
+    if (glmBackupStatus(paths, version, profile) === 'usable') return paths.GLM_BAK;
+  }
+  throw new Error('patched GLM detected, but no hash-verified same-version pristine GLM backup is available');
+}
+
+function printProbeReport(version, reports) {
+  console.log(`ZCode version: ${version}`);
+  for (const report of reports) {
+    console.log(`\n${report.profileId}: ${report.matched}/${report.total} anchors compatible`);
+    for (const target of report.targets) {
+      if (target.matched === target.total && !target.error && target.missingPostconditions.length === 0) continue;
+      const detail = target.error || [
+        ...target.failures.map(item => `anchor ${item.anchor} matched ${item.count}`),
+        ...target.missingPostconditions.map(value => `missing postcondition ${value}`),
+      ].join('; ');
+      console.log(`  ${target.id}: ${target.matched}/${target.total}${detail ? ` — ${detail}` : ''}`);
+    }
+    if (report.glm.matched !== report.glm.total || report.glm.missingPostconditions.length > 0) {
+      const detail = [
+        ...report.glm.failures.map(item => `anchor ${item.anchor} matched ${item.count}`),
+        ...report.glm.missingPostconditions.map(value => `missing postcondition ${value}`),
+      ].join('; ');
+      console.log(`  glm: ${report.glm.matched}/${report.glm.total}${detail ? ` — ${detail}` : ''}`);
+    }
+  }
+}
+
+async function probeCompatibility(paths, version) {
+  let exactProfile;
+  try {
+    exactProfile = loadProfile(version);
+  } catch (error) {
+    if (!error || error.code !== 'ZCODE_PATCH_INCOMPATIBLE' ||
+        !error.message.startsWith('no verified compatibility profile')) throw error;
+  }
+
+  if (exactProfile) {
+    const exactPaths = applyProfilePaths(paths, exactProfile);
+    if (!fs.existsSync(exactPaths.GLM)) {
+      throw compatibilityError(`profile ${exactProfile.id} GLM path is missing: ${exactPaths.GLM}`);
+    }
+    const prepared = await prepareProfile(exactPaths, version, exactProfile, { repack: false, quiet: true });
+    try {
+      const total = exactProfile.targets.reduce((sum, target) =>
+        sum + exactProfile.appSpec[target.specKey].length, exactProfile.glmSpec.spans.length);
+      console.log(`ZCode ${version}: verified profile ${exactProfile.id}`);
+      console.log(`compatibility probe passed: ${total}/${total} anchors, syntax, and postconditions`);
+      console.log('live files were untouched.');
+    } finally {
+      fs.rmSync(prepared.stageDir, { recursive: true, force: true });
+    }
+    return;
+  }
+
+  const profiles = loadAllProfiles();
+  const liveAppPatched = asarHasPatch(paths.ASAR);
+  const appSource = liveAppPatched
+    ? (usableAppBackup(paths, version) ? paths.BACKUP : null)
+    : paths.ASAR;
+  if (!appSource) {
+    throw new Error('patched app.asar detected, but no hash-verified same-version pristine backup is available');
+  }
+  const glmSource = selectUnknownProbeGlmSource(paths, version, profiles);
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-probe-'));
+  const extractDir = path.join(stageDir, 'app');
+  try {
+    stageAsarSource(appSource, paths.APP_UNPACKED, stageDir, extractDir);
+    const reports = profiles.map(profile => analyzeProfile(profile, extractDir, glmSource))
+      .sort((left, right) => right.matched - left.matched);
+    printProbeReport(version, reports);
+    console.log('\nThis version is not verified; probe never creates deployable output.');
+    throw compatibilityError(`no verified compatibility profile for ZCode ${version}`);
+  } finally {
+    fs.rmSync(stageDir, { recursive: true, force: true });
   }
 }
 
@@ -486,8 +878,146 @@ function assert(condition, message) {
 }
 
 function selfTest() {
-  const spec = JSON.parse(fs.readFileSync(path.join(__dirname, 'patch-spec.json'), 'utf8'));
-  const glmSpec = JSON.parse(fs.readFileSync(path.join(__dirname, 'glm-spec.json'), 'utf8'));
+  const profile = loadProfile('3.10.2');
+  const spec = profile.appSpec;
+  const glmSpec = profile.glmSpec;
+  assert(profile.id === 'zcode-3.10.2' && profile.targets.length === Object.keys(spec).length,
+    'verified 3.10.2 profile and all app targets load');
+
+  let unknownProfileError;
+  try {
+    loadProfile('3.10.3');
+  } catch (error) {
+    unknownProfileError = error;
+  }
+  assert(unknownProfileError?.code === 'ZCODE_PATCH_INCOMPATIBLE' &&
+    unknownProfileError.message.includes('no verified compatibility profile for ZCode 3.10.3'),
+    'unknown versions fail closed before patch preparation');
+
+  const profileFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-profile-test-'));
+  try {
+    const fixtureManifest = {
+      schemaVersion: 1,
+      id: 'fixture',
+      version: '1.2.3',
+      targets: [{
+        id: 'fixture.target',
+        specKey: 'fixture.js',
+        path: 'out/fixture.js',
+        postconditions: ['patched'],
+      }],
+      glm: { path: 'resources/glm/zcode.cjs', marker: 'glm-marker', postconditions: [] },
+    };
+    const fixtureAppSpec = { 'fixture.js': [{ find: 'before', replace: 'patched' }] };
+    const fixtureGlmSpec = { spans: [{ find: 'glm-before', replace: 'glm-marker' }] };
+    validateProfileManifest(fixtureManifest, '1.2.3', profileFixtureDir,
+      fixtureAppSpec, fixtureGlmSpec);
+
+    let duplicateTargetError;
+    try {
+      validateProfileManifest({
+        ...fixtureManifest,
+        targets: [...fixtureManifest.targets, { ...fixtureManifest.targets[0] }],
+      }, '1.2.3', profileFixtureDir, fixtureAppSpec, fixtureGlmSpec);
+    } catch (error) {
+      duplicateTargetError = error;
+    }
+    assert(duplicateTargetError?.code === 'ZCODE_PATCH_INCOMPATIBLE',
+      'duplicate profile target ids are rejected');
+
+    let traversalError;
+    try {
+      validateProfileManifest({
+        ...fixtureManifest,
+        targets: [{ ...fixtureManifest.targets[0], path: '../outside.js' }],
+      }, '1.2.3', profileFixtureDir, fixtureAppSpec, fixtureGlmSpec);
+    } catch (error) {
+      traversalError = error;
+    }
+    assert(traversalError?.code === 'ZCODE_PATCH_INCOMPATIBLE',
+      'profile target path traversal is rejected');
+
+    let emptySpanError;
+    try {
+      validateProfileManifest(fixtureManifest, '1.2.3', profileFixtureDir,
+        { 'fixture.js': [{ find: '', replace: 'patched' }] }, fixtureGlmSpec);
+    } catch (error) {
+      emptySpanError = error;
+    }
+    assert(emptySpanError?.code === 'ZCODE_PATCH_INCOMPATIBLE',
+      'empty profile spans are rejected');
+
+    const extractDir = path.join(profileFixtureDir, 'extract');
+    const markerDir = path.join(extractDir, 'assets');
+    fs.mkdirSync(markerDir, { recursive: true });
+    fs.writeFileSync(path.join(markerDir, 'one.js'), 'unique-marker');
+    const markerTarget = {
+      id: 'marker.target',
+      resolver: { type: 'marker-js', directory: 'assets', marker: 'unique-marker' },
+    };
+    assert(path.basename(resolveProfileTarget({ id: 'fixture' }, markerTarget, extractDir)) === 'one.js',
+      'profile marker resolver finds one logical target');
+    fs.writeFileSync(path.join(markerDir, 'two.js'), 'unique-marker');
+    let ambiguousMarkerError;
+    try {
+      resolveProfileTarget({ id: 'fixture' }, markerTarget, extractDir);
+    } catch (error) {
+      ambiguousMarkerError = error;
+    }
+    assert(ambiguousMarkerError?.code === 'ZCODE_PATCH_INCOMPATIBLE',
+      'profile marker resolver rejects ambiguous targets');
+
+    const postconditionFile = path.join(profileFixtureDir, 'postcondition.js');
+    fs.writeFileSync(postconditionFile, 'patched');
+    verifyPostconditions(postconditionFile, ['patched'], 'fixture postcondition');
+    let postconditionError;
+    try {
+      verifyPostconditions(postconditionFile, ['missing'], 'fixture postcondition');
+    } catch (error) {
+      postconditionError = error;
+    }
+    assert(postconditionError?.code === 'ZCODE_PATCH_INCOMPATIBLE',
+      'missing profile postconditions are rejected');
+
+    const checksumDir = path.join(profileFixtureDir, 'checksum-profile');
+    fs.mkdirSync(checksumDir, { recursive: true });
+    const checksumAppSpec = JSON.stringify({ 'fixture.js': [{ find: 'before', replace: 'patched' }] });
+    const checksumGlmSpec = JSON.stringify({ spans: [{ find: 'glm-before', replace: 'glm-marker' }] });
+    fs.writeFileSync(path.join(checksumDir, 'app.json'), checksumAppSpec);
+    fs.writeFileSync(path.join(checksumDir, 'glm.json'), checksumGlmSpec);
+    const checksumManifest = {
+      schemaVersion: 1,
+      id: 'checksum-fixture',
+      version: '9.9.9',
+      appSpec: 'app.json',
+      appSpecSha256: createHash('sha256').update(checksumAppSpec).digest('hex'),
+      glmSpec: 'glm.json',
+      glmSpecSha256: createHash('sha256').update(checksumGlmSpec).digest('hex'),
+      targets: fixtureManifest.targets,
+      glm: fixtureManifest.glm,
+    };
+    fs.writeFileSync(path.join(checksumDir, 'profile.json'), JSON.stringify(checksumManifest));
+    fs.writeFileSync(path.join(checksumDir, 'index.json'), JSON.stringify({
+      schemaVersion: 1,
+      profiles: { '9.9.9': 'profile.json' },
+    }));
+    const checksumLoaded = loadProfile('9.9.9', checksumDir);
+    assert(checksumLoaded.id === 'checksum-fixture', 'profile spec checksums load when valid');
+    fs.writeFileSync(path.join(checksumDir, 'app.json'),
+      checksumAppSpec.replace('before', 'tampered'));
+    let checksumError;
+    try {
+      loadProfile('9.9.9', checksumDir);
+    } catch (error) {
+      checksumError = error;
+    }
+    assert(checksumError?.code === 'ZCODE_PATCH_INCOMPATIBLE' &&
+      checksumError.message.includes('spec checksum mismatch'),
+      'profile spec checksum tampering is rejected');
+  } finally {
+    fs.rmSync(profileFixtureDir, { recursive: true, force: true });
+  }
+
   const oauthAdapter = spec['out/host/index.js'].find(span =>
     span.replace.includes('var openaiSlotPath=')
   );
@@ -893,102 +1423,60 @@ function selfTest() {
 async function main() {
   if (SELF_TEST) return selfTest();
   if (dirIdx >= 0 && !REQUESTED_INSTALL) throw new Error('--dir requires a path');
+  if (PROBE && (DRY || NO_DEPLOY || RESTORE)) {
+    throw new Error('--probe cannot be combined with --dry-run, --no-deploy, or --restore');
+  }
 
   const install = REQUESTED_INSTALL || findInstall();
-  const paths = installPaths(install);
-  const spec = JSON.parse(fs.readFileSync(path.join(__dirname, 'patch-spec.json'), 'utf8'));
-  const glmSpec = JSON.parse(fs.readFileSync(path.join(__dirname, 'glm-spec.json'), 'utf8'));
-
+  let paths = installPaths(install);
   console.log('ZCode install:', install);
   if (!fs.existsSync(paths.ASAR)) throw new Error(`app.asar not found at ${paths.ASAR}`);
-  if (!fs.existsSync(paths.GLM)) throw new Error('resources/glm/zcode.cjs not found');
-  if (RESTORE) return restore(paths, glmSpec);
 
   const version = packageVersion(paths.ASAR);
   if (!version) throw new Error('could not read the installed ZCode package version');
+  if (PROBE) return probeCompatibility(paths, version);
+
+  const profile = loadProfile(version);
+  paths = applyProfilePaths(paths, profile);
+  if (!fs.existsSync(paths.GLM)) throw compatibilityError(`profile ${profile.id} GLM path is missing: ${paths.GLM}`);
+  console.log(`compatibility profile: ${profile.id}`);
+  if (RESTORE) return restore(paths, profile);
+
   const liveAppPatched = asarHasPatch(paths.ASAR);
-  let stageDir;
-
+  let prepared;
   try {
-    const appSource = liveAppPatched
-      ? (usableAppBackup(paths, version) ? paths.BACKUP : null)
-      : paths.ASAR;
-    if (!appSource) {
-      throw new Error('patched app.asar detected, but no same-version pristine app backup is available');
-    }
-    const glmSource = selectGlmSource(paths, version, glmSpec);
-
-    stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-'));
-    const extractDir = path.join(stageDir, 'app');
-    const appOutput = path.join(stageDir, 'app.asar.patched');
-    const glmOutput = path.join(stageDir, 'zcode.patched.cjs');
-    console.log(`preparing from pristine ZCode ${version} sources in`, stageDir);
-    stageAsarSource(appSource, paths.APP_UNPACKED, stageDir, extractDir);
-
-    const assets = path.join(extractDir, 'out', 'renderer', 'assets');
-    const resolve = {
-      'out/renderer/assets/styles-C2WGZ-SY.js': () =>
-        findJsByMarker(assets, 'function SLt({selectedNavItem:e'),
-      'out/renderer/assets/src-C3so_Fno.js': () =>
-        findJsByMarker(assets, 'rootDomain:`z.ai`'),
-      'out/host/chunk-EGJBTUMC.js': () =>
-        findJsByMarker(path.join(extractDir, 'out', 'host'),
-          'convertModelProviderConfigToZCodeProviderInput'),
-    };
-
-    for (const [relative, spans] of Object.entries(spec)) {
-      const target = resolve[relative] ? resolve[relative]() : path.join(extractDir, relative);
-      if (!fs.existsSync(target)) {
-        throw compatibilityError(`missing expected file: ${relative}`);
-      }
-      applySpans(target, spans, relative);
-      syntaxCheck(target);
-      console.log(`[prepared] ${relative}: ${spans.length} spans`);
-    }
-
-    copyVerified(glmSource, glmOutput);
-    applySpans(glmOutput, glmSpec.spans, 'resources/glm/zcode.cjs');
-    syntaxCheck(glmOutput);
-    console.log(`[prepared] resources/glm/zcode.cjs: ${glmSpec.spans.length} spans`);
-
-    console.log('packing staged app.asar...');
-    await asar.createPackageWithOptions(extractDir, appOutput, {
-      unpackDir: '**/{node-pty,ssh2}/**',
-    });
-    if (packageVersion(appOutput) !== version || !asarHasPatch(appOutput)) {
-      throw new Error('staged app.asar verification failed');
-    }
+    prepared = await prepareProfile(paths, version, profile);
 
     if (DRY) {
-      console.log('\ndry-run: all anchors, syntax checks, and isolated repack passed; live files were untouched.');
+      console.log('\ndry-run: profile, anchors, postconditions, syntax checks, and isolated repack passed; live files were untouched.');
       return;
     }
 
     if (NO_DEPLOY) {
       const appDestination = `${paths.ASAR}.patched`;
       const glmDestination = `${paths.GLM}.patched`;
-      copyVerified(appOutput, appDestination);
-      const unpackedOutput = `${appOutput}.unpacked`;
+      copyVerified(prepared.appOutput, appDestination);
+      const unpackedOutput = `${prepared.appOutput}.unpacked`;
       const unpackedDestination = `${appDestination}.unpacked`;
       fs.rmSync(unpackedDestination, { recursive: true, force: true });
       if (fs.existsSync(unpackedOutput)) fs.cpSync(unpackedOutput, unpackedDestination, { recursive: true });
-      copyVerified(glmOutput, glmDestination);
+      copyVerified(prepared.glmOutput, glmDestination);
       console.log(`[packed] ${appDestination}`);
       console.log(`[packed] ${glmDestination}`);
       console.log('deploy skipped; live files were untouched.');
       return;
     }
 
-    deployPrepared(paths, version, appOutput, glmOutput, glmSpec);
+    deployPrepared(paths, version, prepared.appOutput, prepared.glmOutput, profile);
     console.log('\nDone. ZCode restarted. Open Settings -> Model Providers -> OpenAI.');
   } catch (error) {
     if (error && error.code === 'ZCODE_PATCH_INCOMPATIBLE' &&
-        !DRY && !NO_DEPLOY && !liveAppPatched) {
+        !PROBE && !DRY && !NO_DEPLOY && !liveAppPatched) {
       cleanupStaleOpenAiState(paths);
     }
     throw error;
   } finally {
-    if (stageDir) fs.rmSync(stageDir, { recursive: true, force: true });
+    if (prepared?.stageDir) fs.rmSync(prepared.stageDir, { recursive: true, force: true });
   }
 }
 
