@@ -1,0 +1,620 @@
+{
+  "schemaVersion": 1,
+  "transforms": [
+    {
+      "id": "schema.oauth-method-enum",
+      "description": "Add openai to the OAuth connection-method schema",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "host.protocol",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "scheduler.models",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.coding-plan-webview",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.cua-permission-panel",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.javascript-dialog",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.main",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.process-monitor",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.enum\\(\\[\"oauth\",\"apiKey\"\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.enum([\"oauth\",\"apiKey\"]).optional()"
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\(\\[`oauth`,`apiKey`\\]\\)\\.optional\\(\\)",
+              "insert": ",openai:$1([`oauth`,`apiKey`]).optional()"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.oauth-provider-enum",
+      "description": "Add openai to the OAuth provider enum",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "host.protocol",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "scheduler.models",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "preload.coding-plan-webview",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "preload.cua-permission-panel",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "preload.javascript-dialog",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "preload.main",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "preload.process-monitor",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\.enum\\(\\[\"zai\",\"bigmodel\"(?=\\]\\))",
+              "insert": ",\"openai\""
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\(\\[`zai`,`bigmodel`(?=\\]\\))",
+              "insert": ",`openai`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "schema.oauth-connection-secrets",
+      "description": "Add openai to the OAuth connection-secret schema",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "host.protocol",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "scheduler.models",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.coding-plan-webview",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.cua-permission-panel",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.javascript-dialog",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.main",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "preload.process-monitor",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\.string\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1.string().trim().min(1).optional()"
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 0,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "bigmodel:([A-Za-z_$][\\w$]*)\\(\\)\\.trim\\(\\)\\.min\\(1\\)\\.optional\\(\\)",
+              "insert": ",openai:$1().trim().min(1).optional()"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "registry.provider-id-map",
+      "description": "Add built-in OpenAI provider IDs to the prefix map",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 3,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "host.protocol",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "scheduler.models",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "preload.coding-plan-webview",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "preload.cua-permission-panel",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "preload.javascript-dialog",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "preload.main",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        },
+        {
+          "target": "preload.process-monitor",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "zapi:`\\$\\{([A-Za-z_$][\\w$]*)\\}zapi`",
+              "insert": ",openai:`${$1}openai`,openaiCodingPlan:`${$1}openai-coding-plan`,openaiStartPlan:`${$1}openai-start-plan`"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "registry.builtin-provider-predicate",
+      "description": "Treat OpenAI providers as built-in workspace providers",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 10,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\.zapi(?=\\})",
+              "insert": "||$1===$2.openai||$1===$2.openaiCodingPlan||$1===$2.openaiStartPlan"
+            }
+          ]
+        },
+        {
+          "target": "host.protocol",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\.zapi(?=\\})",
+              "insert": "||$1===$2.openai||$1===$2.openaiCodingPlan||$1===$2.openaiStartPlan"
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\.zapi(?=\\})",
+              "insert": "||$1===$2.openai||$1===$2.openaiCodingPlan||$1===$2.openaiStartPlan"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "registry.start-plan-predicate",
+      "description": "Recognize the OpenAI start-plan provider ID",
+      "instances": [
+        {
+          "target": "renderer.providers",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\.zaiStartPlan\\|\\|\\1===\\2\\.bigmodelStartPlan(?=\\})",
+              "insert": "||$1===$2.openaiStartPlan"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "registry.coding-plan-predicate",
+      "description": "Recognize OpenAI coding/start plans as coding-plan providers",
+      "instances": [
+        {
+          "target": "host.protocol",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\|\\|([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\|\\|\\1===\\2\\.bigmodelStartPlan(?=\\})",
+              "insert": "||$1===$2.openaiCodingPlan||$1===$2.openaiStartPlan"
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 1,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "\\|\\|([A-Za-z_$][\\w$]*)===([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\|\\|\\1===\\2\\.bigmodelStartPlan(?=\\})",
+              "insert": "||$1===$2.openaiCodingPlan||$1===$2.openaiStartPlan"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "registry.provider-family-descriptor",
+      "description": "Register the OpenAI provider family descriptor",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 4,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "renderer.providers",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:`openai`,label:`OpenAI`,rootDomain:`openai.com`,oauthProviderId:`openai`,apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "scheduler.models",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "preload.coding-plan-webview",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "preload.cua-permission-panel",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "preload.javascript-dialog",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "preload.main",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        },
+        {
+          "target": "preload.process-monitor",
+          "span": 2,
+          "edits": [
+            {
+              "operation": "insert-after-match",
+              "locate": "([A-Za-z_$][\\w$]*)\\.bigmodelCodingPlan\\}(?=\\])",
+              "insert": ",{id:\"openai\",label:\"OpenAI\",rootDomain:\"openai.com\",oauthProviderId:\"openai\",apiKeyProviderId:$1.openai,startPlanProviderId:$1.openaiStartPlan,codingPlanProviderId:$1.openaiCodingPlan}"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "glm.reasoning-levels-parser",
+      "description": "Read reasoning levels from protocol arrays and internal objects",
+      "instances": [
+        {
+          "target": "glm",
+          "span": 11,
+          "edits": [
+            {
+              "operation": "replace-match",
+              "locate": "function ([A-Za-z_$][\\w$]*)\\(([A-Za-z_$][\\w$]*)\\)\\{return \\2\\.reasoning\\?\\.levels\\.map\\(([A-Za-z_$][\\w$]*)=>\\3\\.value\\)\\?\\?\\[\\]\\}",
+              "template": "function $1($2){let t=$2.reasoning?.levels;if(!t)return[];if(Array.isArray(t))return t.map(t=>t.value);if(typeof t===\"object\")return Object.keys(t);return[]}"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

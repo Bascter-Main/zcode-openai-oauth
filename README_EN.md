@@ -36,6 +36,27 @@ node patch.js --dir <path>   :: Use a custom ZCode installation directory
 - **Unknown version:** deploy and restore fail explicitly because no verified profile exists. There is no fuzzy patching or guessing.
 - **Adding a profile:** ZCode 3.10.1/3.10.3 or later can be added only after the corresponding pristine `app.asar` and `resources/glm/zcode.cjs` are available and the same test matrix passes. `3.10.x` wildcards are not used.
 
+## Transform Framework
+
+Patches are more than text replacement. Every migratable edit point is declared as a **semantic transform** in `transforms/registry.json`:
+
+| Transform | Purpose | Coverage |
+|---|---|---|
+| `schema.oauth-method-enum` / `oauth-provider-enum` / `oauth-connection-secrets` | Register openai in the OAuth schemas | GLM, protocol, scheduler, preload×5, renderer |
+| `registry.provider-id-map` | Register the three `builtin:openai*` provider IDs | 7 bundles |
+| `registry.builtin-provider-predicate` | Include OpenAI providers in the workspace catalog | GLM, protocol, renderer |
+| `registry.start-plan-predicate` / `coding-plan-predicate` | Recognize OpenAI start/coding plans | renderer, protocol |
+| `registry.provider-family-descriptor` | Register the OpenAI provider family | GLM, renderer, scheduler, preload×5 |
+| `glm.reasoning-levels-parser` | Accept reasoning levels in both array and object form | GLM |
+
+Location uses three progressive levels:
+
+1. **Semantic locate** — patterns capture minified identifier names with wildcards (for example `` zapi:`${X}zapi` `` adapts to any renamed prefix variable such as `M2`, `Te`, or `We`), and must match exactly once in the whole bundle;
+2. **Exact-anchor fallback** — if semantic location fails on a verified version, the version's full content anchor is used;
+3. **Fail-closed** — if neither matches, the run aborts without writing anything.
+
+On verified versions the semantic transform output must be **byte-identical** to the anchor output, otherwise the run is rejected (guards against transform drift). `--probe` reports each transform's resolution level (`semantic` / `anchor-fallback` / `failed`), so after an upgrade you can see exactly which semantic site changed. Large injections (host catalog sync, renderer JSX, and similar) stay on exact anchors but keep unique target/span diagnostics.
+
 ## How It Works
 
 | Layer | Implementation |
@@ -52,6 +73,7 @@ node patch.js --dir <path>   :: Use a custom ZCode installation directory
 - `profiles/<version>/profile.json` — target, marker, postcondition, and spec-checksum configuration
 - `profiles/<version>/patch-spec.json` — content-anchor patches for target bundles inside `app.asar`
 - `profiles/<version>/glm-spec.json` — content-anchor patches for the agent runtime at `resources/glm/zcode.cjs`
+- `transforms/registry.json` — semantic transform definitions (version-tolerant site location and insertion templates)
 - `package.json` / `package-lock.json` — locks the asar dependency version used by the patcher
 - `patch.bat` — Windows double-click entry point; installs dependencies automatically on first run
 

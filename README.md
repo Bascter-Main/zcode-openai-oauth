@@ -36,6 +36,27 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 - **未知版本**：部署与恢复模式直接失败并说明没有 verified profile，不猜测、不做模糊替换。
 - **新增 profile**：ZCode 3.10.1/3.10.3 等版本只有在取得对应 pristine `app.asar` 与 `resources/glm/zcode.cjs` 并完成同等测试后，才加入 `profiles/index.json`。不使用 `3.10.x` 通配符。
 
+## 修改点位框架
+
+补丁不只是“文本替换”。每个可迁移的修改点都在 `transforms/registry.json` 中声明为**语义 transform**：
+
+| transform | 作用 | 覆盖 |
+|---|---|---|
+| `schema.oauth-method-enum` / `oauth-provider-enum` / `oauth-connection-secrets` | 在 OAuth schema 中注册 openai | GLM、protocol、scheduler、preload×5、renderer |
+| `registry.provider-id-map` | 注册 `builtin:openai*` 三个 provider ID | 7 个 bundle |
+| `registry.builtin-provider-predicate` | 让 workspace catalog 包含 OpenAI provider | GLM、protocol、renderer |
+| `registry.start-plan-predicate` / `coding-plan-predicate` | OpenAI start/coding plan 判定 | renderer、protocol |
+| `registry.provider-family-descriptor` | 注册 OpenAI provider family | GLM、renderer、scheduler、preload×5 |
+| `glm.reasoning-levels-parser` | reasoning levels 同时兼容 array/object | GLM |
+
+定位策略是三级递进的：
+
+1. **语义定位**：locate pattern 用通配捕获 minified 变量名（如 `zapi:\`${X}zapi\`` 自动适配 `M2`/`Te`/`We` 等任意命名），在整个 bundle 中要求恰好一个匹配；
+2. **exact anchor 兜底**：已验证版本上语义定位失败时，回退到该版本的完整内容锚点；
+3. **fail-closed**：两者都失败时中止，不写任何文件。
+
+已验证版本上强制**逐字节等价**：语义 transform 的输出必须与 anchor 输出完全一致，否则直接拒绝（防止 transform 定义漂移）。`--probe` 会按 transform ID 报告每个点位的定位结果（`semantic` / `anchor-fallback` / `failed`），升级后一眼就能看出是哪个语义点位变了。其余大块注入（host 目录同步、renderer JSX 等）保留精确锚点，但都有唯一 target/span 诊断。
+
 ## 实现原理
 
 | 层 | 内容 |
@@ -52,6 +73,7 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 - `profiles/<版本>/profile.json` — target、marker、postcondition 和 spec 校验配置
 - `profiles/<版本>/patch-spec.json` — asar 内各目标 bundle 的内容锚点补丁
 - `profiles/<版本>/glm-spec.json` — agent 运行时 `resources/glm/zcode.cjs` 的内容锚点补丁
+- `transforms/registry.json` — 语义 transform 定义（跨版本可复用的点位定位与插入模板）
 - `package.json` / `package-lock.json` — 锁定补丁器使用的 asar 依赖版本
 - `patch.bat` — Windows 双击入口（首次运行自动安装依赖）
 

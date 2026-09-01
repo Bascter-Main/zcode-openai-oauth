@@ -243,7 +243,9 @@ function loadProfile(version, profileRoot = PROFILE_ROOT) {
   const appSpec = readJsonStrict(appSpecPath, `profile ${version} app spec`);
   const glmSpec = readJsonStrict(glmSpecPath, `profile ${version} GLM spec`);
   validateProfileManifest(manifest, version, profileDir, appSpec, glmSpec);
-  return { ...manifest, profileDir, appSpec, glmSpec };
+  const profile = { ...manifest, profileDir, appSpec, glmSpec };
+  profile.transformInstances = buildTransformInstances(profile, loadTransformsRegistry());
+  return profile;
 }
 
 function loadAllProfiles(profileRoot = PROFILE_ROOT) {
@@ -375,13 +377,131 @@ function verifyPostconditions(filePath, postconditions, label) {
   }
 }
 
+function expandTransformTemplate(template, match) {
+  return template.replace(/\$(\d)/g, (m, n) => match[Number(n)] ?? '');
+}
+
+function applySemanticEdits(text, edits, label) {
+  let result = text;
+  for (let index = 0; index < edits.length; index++) {
+    const edit = edits[index];
+    const matches = [...result.matchAll(new RegExp(edit.locate, 'g'))];
+    if (matches.length !== 1) return null;
+    const match = matches[0];
+    if (edit.operation === 'insert-after-match') {
+      const at = match.index + match[0].length;
+      result = result.slice(0, at) + expandTransformTemplate(edit.insert, match) + result.slice(at);
+    } else if (edit.operation === 'replace-match') {
+      result = result.slice(0, match.index) + expandTransformTemplate(edit.template, match) +
+        result.slice(match.index + match[0].length);
+    } else {
+      throw compatibilityError(`${label}: unknown transform operation ${edit.operation}`);
+    }
+  }
+  return result;
+}
+
+function loadTransformsRegistry() {
+  const registry = readJsonStrict(path.join(__dirname, 'transforms', 'registry.json'), 'transform registry');
+  if (registry.schemaVersion !== 1 || !Array.isArray(registry.transforms)) {
+    throw compatibilityError('transform registry must use schemaVersion 1');
+  }
+  const ids = new Set();
+  for (const transform of registry.transforms) {
+    if (!transform || typeof transform.id !== 'string' || !transform.id || ids.has(transform.id) ||
+        !Array.isArray(transform.instances) || transform.instances.length === 0) {
+      throw compatibilityError('transform registry contains an invalid or duplicate transform');
+    }
+    ids.add(transform.id);
+    for (const instance of transform.instances) {
+      if (typeof instance.target !== 'string' || !instance.target ||
+          !Number.isInteger(instance.span) || instance.span < 0 ||
+          !Array.isArray(instance.edits) || instance.edits.length === 0) {
+        throw compatibilityError(`transform ${transform.id} has an invalid instance`);
+      }
+      for (const edit of instance.edits) {
+        if ((edit.operation !== 'insert-after-match' && edit.operation !== 'replace-match') ||
+            typeof edit.locate !== 'string' || !edit.locate ||
+            typeof (edit.insert ?? edit.template) !== 'string' ||
+            !(edit.insert ?? edit.template)) {
+          throw compatibilityError(`transform ${transform.id} has an invalid edit`);
+        }
+      }
+    }
+  }
+  return registry;
+}
+
+function buildTransformInstances(profile, registry) {
+  const declared = new Set(profile.transforms ?? []);
+  const bySpan = new Map();
+  for (const transform of registry.transforms) {
+    if (!declared.has(transform.id)) continue;
+    for (const instance of transform.instances) {
+      const spans = instance.target === 'glm'
+        ? profile.glmSpec.spans
+        : profile.appSpec[profile.targets.find(t => t.id === instance.target)?.specKey];
+      if (!spans || instance.span >= spans.length) {
+        throw compatibilityError(
+          `transform ${transform.id} references a missing span: ${instance.target}#${instance.span + 1}`);
+      }
+      const key = `${instance.target}:${instance.span}`;
+      if (!bySpan.has(key)) bySpan.set(key, []);
+      bySpan.get(key).push({ id: transform.id, edits: instance.edits });
+    }
+  }
+  for (const id of declared) {
+    if (!registry.transforms.some(t => t.id === id)) {
+      throw compatibilityError(`profile ${profile.id} declares an unknown transform: ${id}`);
+    }
+  }
+  return bySpan;
+}
+
+function applySpansWithTransforms(filePath, spans, instancesBySpan, targetKey, label) {
+  let text = fs.readFileSync(filePath, 'utf8');
+  const levels = [];
+  for (let index = 0; index < spans.length; index++) {
+    const matches = countMatches(text, spans[index].find);
+    if (matches !== 1) {
+      throw compatibilityError(
+        `${label}: anchor ${index + 1}/${spans.length} matched ${matches.length} times; ` +
+        'this ZCode version changed the patched code.'
+      );
+    }
+    const expected = text.replace(spans[index].find, spans[index].replace);
+    const instances = instancesBySpan.get(`${targetKey}:${index}`);
+    if (instances) {
+      const ids = instances.map(instance => instance.id);
+      const semantic = applySemanticEdits(text, instances.flatMap(instance => instance.edits),
+        `${label} transform ${ids.join(', ')}`);
+      if (semantic !== null) {
+        if (semantic !== expected) {
+          throw new Error(
+            `${label}: semantic transform ${ids.join(', ')} diverges from the verified anchor ${index + 1}`);
+        }
+        levels.push({ span: index + 1, level: 'semantic', ids });
+        text = semantic;
+        continue;
+      }
+      levels.push({ span: index + 1, level: 'anchor-fallback', ids });
+    } else {
+      levels.push({ span: index + 1, level: 'anchor' });
+    }
+    text = expected;
+  }
+  fs.writeFileSync(filePath, text);
+  return levels;
+}
+
 function applyProfileTarget(profile, target, extractDir) {
   const filePath = resolveProfileTarget(profile, target, extractDir);
   const label = `profile ${profile.id} target ${target.id} (${path.basename(filePath)})`;
-  applySpans(filePath, profile.appSpec[target.specKey], label);
+  const levels = applySpansWithTransforms(filePath, profile.appSpec[target.specKey],
+    profile.transformInstances, target.id, label);
   syntaxCheck(filePath);
   verifyPostconditions(filePath, target.postconditions, label);
-  return filePath;
+  return { filePath, levels };
 }
 
 function sleepMs(ms) {
@@ -689,8 +809,8 @@ async function prepareProfile(paths, version, profile, options = {}) {
 
     const resolvedTargets = [];
     for (const target of profile.targets) {
-      const filePath = applyProfileTarget(profile, target, extractDir);
-      resolvedTargets.push({ id: target.id, filePath });
+      const { filePath, levels } = applyProfileTarget(profile, target, extractDir);
+      resolvedTargets.push({ id: target.id, filePath, levels });
       if (!quiet) {
         console.log(`[prepared] ${target.id} (${path.basename(filePath)}): ` +
           `${profile.appSpec[target.specKey].length} spans`);
@@ -698,11 +818,19 @@ async function prepareProfile(paths, version, profile, options = {}) {
     }
 
     copyVerified(sources.glmSource, glmOutput);
-    applySpans(glmOutput, profile.glmSpec.spans, `profile ${profile.id} GLM`);
+    const glmLevels = applySpansWithTransforms(glmOutput, profile.glmSpec.spans,
+      profile.transformInstances, 'glm', `profile ${profile.id} GLM`);
     syntaxCheck(glmOutput);
     verifyPostconditions(glmOutput, [profile.glm.marker, ...profile.glm.postconditions],
       `profile ${profile.id} GLM`);
     if (!quiet) console.log(`[prepared] GLM: ${profile.glmSpec.spans.length} spans`);
+    const fallbackLevels = [...resolvedTargets.flatMap(t => t.levels), ...glmLevels]
+      .filter(level => level.level === 'anchor-fallback');
+    if (!quiet) {
+      for (const level of fallbackLevels) {
+        console.log(`[fallback] anchor used for transform ${level.ids.join(', ')} (span ${level.span})`);
+      }
+    }
 
     if (repack) {
       if (!quiet) console.log('packing staged app.asar...');
@@ -714,27 +842,50 @@ async function prepareProfile(paths, version, profile, options = {}) {
       }
     }
 
-    return { stageDir, extractDir, appOutput, glmOutput, resolvedTargets, ...sources };
+    return { stageDir, extractDir, appOutput, glmOutput, resolvedTargets, glmLevels, ...sources };
   } catch (error) {
     fs.rmSync(stageDir, { recursive: true, force: true });
     throw error;
   }
 }
 
-function analyzeSpans(text, spans) {
+function analyzeSpans(text, spans, instancesBySpan, targetKey) {
   let result = text;
   let matched = 0;
   const failures = [];
+  const levels = [];
   for (let index = 0; index < spans.length; index++) {
+    const instances = instancesBySpan.get(`${targetKey}:${index}`);
+    if (instances) {
+      const ids = instances.map(instance => instance.id);
+      const semantic = applySemanticEdits(result, instances.flatMap(instance => instance.edits),
+        `probe ${targetKey}#${index + 1}`);
+      if (semantic !== null) {
+        matched += 1;
+        result = semantic;
+        levels.push({ span: index + 1, level: 'semantic', ids });
+        continue;
+      }
+    }
     const count = countMatches(result, spans[index].find);
     if (count === 1) {
       matched += 1;
       result = result.replace(spans[index].find, spans[index].replace);
+      levels.push({
+        span: index + 1,
+        level: instances ? 'anchor-fallback' : 'anchor',
+        ids: instances ? instances.map(instance => instance.id) : [],
+      });
     } else {
       failures.push({ anchor: index + 1, count });
+      levels.push({
+        span: index + 1,
+        level: 'failed',
+        ids: instances ? instances.map(instance => instance.id) : [],
+      });
     }
   }
-  return { result, matched, total: spans.length, failures };
+  return { result, matched, total: spans.length, failures, levels };
 }
 
 function analyzeProfile(profile, extractDir, glmSource) {
@@ -746,7 +897,8 @@ function analyzeProfile(profile, extractDir, glmSource) {
     total += spans.length;
     try {
       const filePath = resolveProfileTarget(profile, target, extractDir);
-      const analysis = analyzeSpans(fs.readFileSync(filePath, 'utf8'), spans);
+      const analysis = analyzeSpans(fs.readFileSync(filePath, 'utf8'), spans,
+        profile.transformInstances, target.id);
       const missingPostconditions = analysis.failures.length === 0
         ? target.postconditions.filter(value => !analysis.result.includes(value))
         : [];
@@ -758,6 +910,7 @@ function analyzeProfile(profile, extractDir, glmSource) {
         total: analysis.total,
         failures: analysis.failures,
         missingPostconditions,
+        levels: analysis.levels,
       });
     } catch (error) {
       targets.push({
@@ -766,12 +919,14 @@ function analyzeProfile(profile, extractDir, glmSource) {
         total: spans.length,
         failures: [],
         missingPostconditions: [],
+        levels: [],
         error: error.message,
       });
     }
   }
 
-  const glmAnalysis = analyzeSpans(fs.readFileSync(glmSource, 'utf8'), profile.glmSpec.spans);
+  const glmAnalysis = analyzeSpans(fs.readFileSync(glmSource, 'utf8'), profile.glmSpec.spans,
+    profile.transformInstances, 'glm');
   const glmMissing = glmAnalysis.failures.length === 0
     ? [profile.glm.marker, ...profile.glm.postconditions]
       .filter(value => !glmAnalysis.result.includes(value))
@@ -788,6 +943,7 @@ function analyzeProfile(profile, extractDir, glmSource) {
       total: glmAnalysis.total,
       failures: glmAnalysis.failures,
       missingPostconditions: glmMissing,
+      levels: glmAnalysis.levels,
     },
   };
 }
@@ -805,6 +961,22 @@ function printProbeReport(version, reports) {
   console.log(`ZCode version: ${version}`);
   for (const report of reports) {
     console.log(`\n${report.profileId}: ${report.matched}/${report.total} anchors compatible`);
+    const levelCounts = { semantic: 0, anchor: 0, 'anchor-fallback': 0, failed: 0 };
+    const failedTransforms = [];
+    for (const level of [...report.targets.flatMap(t => t.levels), ...report.glm.levels]) {
+      levelCounts[level.level] += 1;
+      if (level.level === 'failed') {
+        for (const id of level.ids) failedTransforms.push(id);
+      }
+    }
+    if (levelCounts.semantic + levelCounts['anchor-fallback'] > 0) {
+      console.log(`  transform resolution: ${levelCounts.semantic} semantic, ` +
+        `${levelCounts['anchor-fallback']} anchor-fallback, ${levelCounts.anchor} anchor-only, ` +
+        `${levelCounts.failed} failed`);
+    }
+    for (const id of [...new Set(failedTransforms)]) {
+      console.log(`  transform failed: ${id}`);
+    }
     for (const target of report.targets) {
       if (target.matched === target.total && !target.error && target.missingPostconditions.length === 0) continue;
       const detail = target.error || [
@@ -841,8 +1013,12 @@ async function probeCompatibility(paths, version) {
     try {
       const total = exactProfile.targets.reduce((sum, target) =>
         sum + exactProfile.appSpec[target.specKey].length, exactProfile.glmSpec.spans.length);
+      const allLevels = [...prepared.resolvedTargets.flatMap(t => t.levels), ...prepared.glmLevels];
+      const semantic = allLevels.filter(l => l.level === 'semantic').length;
+      const fallback = allLevels.filter(l => l.level === 'anchor-fallback').length;
       console.log(`ZCode ${version}: verified profile ${exactProfile.id}`);
-      console.log(`compatibility probe passed: ${total}/${total} anchors, syntax, and postconditions`);
+      console.log(`compatibility probe passed: ${total}/${total} anchors, syntax, and postconditions ` +
+        `(${semantic} semantic, ${fallback} anchor-fallback, ${total - semantic - fallback} anchor-only)`);
       console.log('live files were untouched.');
     } finally {
       fs.rmSync(prepared.stageDir, { recursive: true, force: true });
@@ -1016,6 +1192,54 @@ function selfTest() {
       'profile spec checksum tampering is rejected');
   } finally {
     fs.rmSync(profileFixtureDir, { recursive: true, force: true });
+  }
+
+  const registry = loadTransformsRegistry();
+  for (const [key, instances] of profile.transformInstances) {
+    const separator = key.lastIndexOf(':');
+    const targetId = key.slice(0, separator);
+    const spanIndex = Number(key.slice(separator + 1));
+    const span = targetId === 'glm'
+      ? glmSpec.spans[spanIndex]
+      : spec[profile.targets.find(t => t.id === targetId).specKey][spanIndex];
+    const semantic = applySemanticEdits(span.find, instances.flatMap(instance => instance.edits),
+      `transform fixture ${key}`);
+    assert(semantic === span.replace,
+      `semantic transforms reproduce anchor byte-for-byte: ${key} [${instances.map(i => i.id).join(', ')}]`);
+  }
+  assert(profile.transformInstances.size === 31,
+    'all mapped spans are covered by semantic transforms');
+
+  const idMapInstance = registry.transforms
+    .find(t => t.id === 'registry.provider-id-map').instances.find(i => i.target === 'glm');
+  const renamedContext = glmSpec.spans[3].find.replaceAll('M2', 'Zq9');
+  const renamedOutput = applySemanticEdits(renamedContext, idMapInstance.edits, 'renamed fixture');
+  assert(renamedOutput !== null && renamedOutput.includes('${Zq9}openai-coding-plan'),
+    'semantic locate survives minified identifier renames');
+  assert(applySemanticEdits('zapi:`${Aa}zapi`;zapi:`${Bb}zapi`', idMapInstance.edits,
+    'ambiguous fixture') === null,
+    'ambiguous semantic sites fail closed to the verified anchor');
+
+  const divergenceDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-divergence-'));
+  try {
+    const divergenceFile = path.join(divergenceDir, 'target.js');
+    fs.writeFileSync(divergenceFile, 'bigmodel:Q9.enum(["oauth","apiKey"]).optional()');
+    const methodEdits = registry.transforms
+      .find(t => t.id === 'schema.oauth-method-enum').instances[0].edits;
+    let divergenceError;
+    try {
+      applySpansWithTransforms(divergenceFile, [{
+        find: 'bigmodel:Q9.enum(["oauth","apiKey"]).optional()',
+        replace: 'bigmodel:Q9.enum(["oauth","apiKey"]).optional(),unexpected',
+      }], new Map([['fixture:0', [{ id: 'schema.oauth-method-enum', edits: methodEdits }]]]),
+        'fixture', 'divergence fixture');
+    } catch (error) {
+      divergenceError = error;
+    }
+    assert(divergenceError?.message.includes('diverges from the verified anchor'),
+      'semantic output that diverges from the verified anchor is rejected');
+  } finally {
+    fs.rmSync(divergenceDir, { recursive: true, force: true });
   }
 
   const oauthAdapter = spec['out/host/index.js'].find(span =>
