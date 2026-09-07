@@ -1,11 +1,11 @@
 {
   "schemaVersion": 1,
-  "id": "zcode-3.10.2",
-  "version": "3.10.2",
+  "id": "zcode-3.11.2",
+  "version": "3.11.2",
   "appSpec": "patch-spec.json",
-  "appSpecSha256": "bec263fb3f0a01a6fa5d84e4eea8aaa5627aa1d186395f2cf8fa5f88a9a23999",
+  "appSpecSha256": "69a8dca7481cfcd46d5d00b3ac5e148705f4efc6a2a6d5a4f9ee8290f9fa5eae",
   "glmSpec": "glm-spec.json",
-  "glmSpecSha256": "986c3190082daf09c05bc843852a4358e1e4517869c6d4727bf3a8827be5a622",
+  "glmSpecSha256": "2d160baee872cf21acbc5d4ce3822a00cc0443b1004b4e43aa7723f98593eea8",
   "appMarker": "OpenAiOAuthAdapter",
   "transforms": [
     "schema.oauth-method-enum",
@@ -27,12 +27,13 @@
         "OpenAiOAuthAdapter",
         "repairOpenAiContextWindow",
         "catalogContextWindow",
-        "loadSinglePresetProvider([],\"openai\""
+        "loadSinglePresetProvider([],\"openai\"",
+        "la&&n.push(la)"
       ]
     },
     {
       "id": "host.protocol",
-      "specKey": "out/host/chunk-EGJBTUMC.js",
+      "specKey": "out/host/chunk-RWMCBKS2.js",
       "resolver": {
         "type": "marker-js",
         "directory": "out/host",
@@ -62,21 +63,21 @@
     },
     {
       "id": "renderer.settings",
-      "specKey": "out/renderer/assets/styles-C2WGZ-SY.js",
+      "specKey": "out/renderer/assets/styles-DyAcaLKy.js",
       "resolver": {
         "type": "marker-js",
         "directory": "out/renderer/assets",
-        "marker": "function SLt({selectedNavItem:e"
+        "marker": "function czt({selectedNavItem:e"
       },
       "postconditions": [
         "openaiCodingPlan",
-        "maskImage:`url(\"${n}\")`",
-        "items:e.filter(e=>e7(e.presetId)!==`openai`)"
+        "openai:\"data:image/svg+xml",
+        "items:e.filter(e=>$5(e.presetId)!==`openai`)"
       ]
     },
     {
       "id": "renderer.providers",
-      "specKey": "out/renderer/assets/src-C3so_Fno.js",
+      "specKey": "out/renderer/assets/src-CdedQslh.js",
       "resolver": {
         "type": "marker-js",
         "directory": "out/renderer/assets",
@@ -137,10 +138,13 @@
     "marker": "let cdx=String(this.config.url({path:\"\"})).indexOf(\"chatgpt.com\")>=0",
     "postconditions": [
       "projectMemoryStreamText",
-      "e===gs.openaiCodingPlan",
+      "e===ys.openaiCodingPlan",
       "if(typeof t===\"object\")return Object.keys(t)",
       "stream\",\"include\",\"reasoning",
-      "se=cdx?!1:P?.store"
+      "se=cdx?!1:P?.store",
+      "deepseek-v4-thinking-depth",
+      "openaiCompatible:{reasoningEffort:e===G_?\"high\":\"none\"}",
+      "function LSo(){let e=lfr();return Object.fromEntries(l2e.map(t=>[t,{...e[t],openaiCompatible:{reasoningEffort:t}"
     ]
   }
 }

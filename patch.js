@@ -1054,11 +1054,14 @@ function assert(condition, message) {
 }
 
 function selfTest() {
-  const profile = loadProfile('3.10.2');
+  const profiles = loadAllProfiles();
+  const profile = profiles.find(candidate => candidate.version === '3.10.2');
   const spec = profile.appSpec;
   const glmSpec = profile.glmSpec;
   assert(profile.id === 'zcode-3.10.2' && profile.targets.length === Object.keys(spec).length,
     'verified 3.10.2 profile and all app targets load');
+  assert(profiles.some(candidate => candidate.version === '3.11.2'),
+    'verified 3.11.2 profile and checksums load');
 
   let unknownProfileError;
   try {
@@ -1195,20 +1198,23 @@ function selfTest() {
   }
 
   const registry = loadTransformsRegistry();
-  for (const [key, instances] of profile.transformInstances) {
-    const separator = key.lastIndexOf(':');
-    const targetId = key.slice(0, separator);
-    const spanIndex = Number(key.slice(separator + 1));
-    const span = targetId === 'glm'
-      ? glmSpec.spans[spanIndex]
-      : spec[profile.targets.find(t => t.id === targetId).specKey][spanIndex];
-    const semantic = applySemanticEdits(span.find, instances.flatMap(instance => instance.edits),
-      `transform fixture ${key}`);
-    assert(semantic === span.replace,
-      `semantic transforms reproduce anchor byte-for-byte: ${key} [${instances.map(i => i.id).join(', ')}]`);
+  for (const candidate of profiles) {
+    for (const [key, instances] of candidate.transformInstances) {
+      const separator = key.lastIndexOf(':');
+      const targetId = key.slice(0, separator);
+      const spanIndex = Number(key.slice(separator + 1));
+      const span = targetId === 'glm'
+        ? candidate.glmSpec.spans[spanIndex]
+        : candidate.appSpec[candidate.targets.find(t => t.id === targetId).specKey][spanIndex];
+      const semantic = applySemanticEdits(span.find, instances.flatMap(instance => instance.edits),
+        `transform fixture ${candidate.version} ${key}`);
+      assert(semantic === span.replace,
+        `semantic transforms reproduce anchor byte-for-byte: ${candidate.version} ${key} ` +
+        `[${instances.map(i => i.id).join(', ')}]`);
+    }
   }
-  assert(profile.transformInstances.size === 31,
-    'all mapped spans are covered by semantic transforms');
+  assert(profiles.every(candidate => candidate.transformInstances.size === 31),
+    'all mapped spans in every profile are covered by semantic transforms');
 
   const idMapInstance = registry.transforms
     .find(t => t.id === 'registry.provider-id-map').instances.find(i => i.target === 'glm');
@@ -1288,6 +1294,14 @@ function selfTest() {
   assert(JSON.stringify(reasoningLevels({ reasoning: { levels: [{ value: 'max' }] } })) === '["max"]' &&
     JSON.stringify(reasoningLevels({ reasoning: { levels: { max: {}, ultra: {} } } })) === '["max","ultra"]',
     'GLM reads protocol-array and internal-object reasoning level formats');
+
+  const chatCompletionsReasoningSpan = profiles.find(candidate => candidate.version === '3.11.2')
+    .glmSpec.spans.find(span => span.find.startsWith('function LSo(){let e=lfr();'));
+  assert(chatCompletionsReasoningSpan &&
+    !chatCompletionsReasoningSpan.replace.includes('openaiCompatible:{thinking:') &&
+    chatCompletionsReasoningSpan.replace.includes('openaiCompatible:{reasoningEffort:t}') &&
+    chatCompletionsReasoningSpan.replace.includes('openaiCompatible:{reasoningEffort:e===G_?"high":"none"}'),
+    'OpenAI-compatible reasoning profiles use reasoningEffort instead of thinking');
 
   const dynamic = spec['out/host/index.js'].find(span =>
     span.find.startsWith('async loadSinglePresetProvider')
