@@ -36,6 +36,23 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 - **未知版本**：部署与恢复模式直接失败并说明没有 verified profile，不猜测压缩变量、不做模糊替换。
 - **新增 profile**：只有取得对应 pristine `app.asar` 与 `resources/glm/zcode.cjs`，重新核对大块 host/renderer 注入的实际变量绑定并完成同等测试后，才加入 `profiles/index.json`。不使用 `3.10.x` 通配符。
 
+## 运行时补丁模式（实验）
+
+默认流程在部署时把补丁写进 `app.asar`。运行时模式不改写 bundle：解包后在**加载时**按同一份 profile 变换代码——main/host/scheduler 经模块加载钩子，renderer 经协议层改写。每个点位独立失败降级：某个锚点在新版本失效时，对应功能缺席，但应用照常运行，不会产出坏包。preload 与 agent 运行时无法被加载时拦截，仍在安装时扁平修补（带 `.rt-pristine` 备份）。
+
+```bat
+:: 安装（需先关闭 ZCode；若此前使用过静态补丁，先 node patch.js --restore）
+node runtime/install-runtime.js --dir "D:\Program Files\ZCode"
+
+:: 启动一次 ZCode 后，校验运行时投递与静态严格变换逐字节一致
+node runtime/verify-runtime.js --dir "D:\Program Files\ZCode"
+
+:: 卸载（需先关闭 ZCode）
+node runtime/install-runtime.js --dir "D:\Program Files\ZCode" --restore
+```
+
+投递明细记录在 `resources/app/out/.zcode-runtime/runtime.log`（每个目标的锚点命中数、postcondition 与关键不变量校验结果、投递内容哈希）。
+
 ## 修改点位框架
 
 补丁不只是“文本替换”。每个可迁移的修改点都在 `transforms/registry.json` 中声明为**语义 transform**：
@@ -72,6 +89,8 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 ## 文件说明
 
 - `patch.js` — 版本无关补丁引擎（profile 选择/解包/打补丁/校验/打包/探测/部署/重启）
+- `patch-core.cjs` — 静态补丁器与运行时共享的纯文本补丁核心（内容锚点/语义 transform/关键数据流不变量）
+- `runtime/` — 运行时补丁模式：加载时变换（bootstrap、loader hooks、协议层改写）与安装/校验脚本
 - `profiles/index.json` — 精确 ZCode 版本到 profile 的映射
 - `profiles/<版本>/profile.json` — target、marker、postcondition 和 spec 校验配置
 - `profiles/<版本>/patch-spec.json` — asar 内各目标 bundle 的内容锚点补丁

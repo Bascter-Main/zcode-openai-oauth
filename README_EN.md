@@ -36,6 +36,23 @@ node patch.js --dir <path>   :: Use a custom ZCode installation directory
 - **Unknown versions:** deploy and restore fail explicitly because no verified profile exists. Minified identifiers are not guessed and fuzzy replacement is never attempted.
 - **Adding a profile:** a version is indexed only after its pristine `app.asar` and `resources/glm/zcode.cjs` are available, the actual bindings used by large host/renderer injections are reviewed again, and the complete test matrix passes. Version wildcards such as `3.10.x` are not used.
 
+## Runtime patch mode (experimental)
+
+The default flow writes the patch into `app.asar` at deploy time. Runtime mode leaves the bundles untouched on disk: after extraction, the same profile is applied **at load time** — main/host/scheduler through module loader hooks, the renderer through protocol-level response rewriting. Every site degrades independently: if an anchor stops matching after an update, that feature is simply absent while the app keeps running; a broken package is never produced. Preloads and the agent runtime cannot be intercepted at load time, so they are flat-patched at install time (with `.rt-pristine` backups).
+
+```bat
+:: Install (close ZCode first; if the static patch was applied before, run node patch.js --restore first)
+node runtime/install-runtime.js --dir "D:\Program Files\ZCode"
+
+:: After launching ZCode once, verify runtime delivery is byte-identical to the strict static transform
+node runtime/verify-runtime.js --dir "D:\Program Files\ZCode"
+
+:: Uninstall (close ZCode first)
+node runtime/install-runtime.js --dir "D:\Program Files\ZCode" --restore
+```
+
+Delivery details are recorded in `resources/app/out/.zcode-runtime/runtime.log` (per-target anchor hits, postcondition and critical-invariant results, delivered content hashes).
+
 ## Transform Framework
 
 Patches are more than text replacement. Every migratable edit point is declared as a **semantic transform** in `transforms/registry.json`:
@@ -72,6 +89,8 @@ The final bundles also pass two cross-span data-flow invariants: the OpenAI pres
 ## Files
 
 - `patch.js` — version-independent patch engine (profile selection, extraction, patching, validation, repacking, probing, deployment, and restart)
+- `patch-core.cjs` — pure-text patch core shared by the static patcher and runtime mode (content anchors, semantic transforms, critical data-flow invariants)
+- `runtime/` — runtime patch mode: load-time transforms (bootstrap, loader hooks, protocol rewriting) plus install/verify scripts
 - `profiles/index.json` — exact ZCode version to compatibility profile mapping
 - `profiles/<version>/profile.json` — target, marker, postcondition, and spec-checksum configuration
 - `profiles/<version>/patch-spec.json` — content-anchor patches for target bundles inside `app.asar`

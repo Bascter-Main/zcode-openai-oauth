@@ -37,6 +37,27 @@ const resources = path.join(INSTALL, 'resources');
 const appDir = path.join(resources, 'app');
 const asarPath = path.join(resources, 'app.asar');
 
+// --restore: remove the extracted app dir, bring back the pristine asar, and
+// restore the glm CLI bundle. Run with ZCode closed.
+if (args.includes('--restore')) {
+  const pristine = `${asarPath}.pristine`;
+  if (!fs.existsSync(pristine)) fail(`no ${pristine} — runtime mode is not installed here`);
+  if (fs.existsSync(appDir)) {
+    fs.rmSync(appDir, { recursive: true, force: true });
+    console.log('removed resources/app');
+  }
+  fs.renameSync(pristine, asarPath);
+  console.log('app.asar.pristine -> app.asar');
+  const glmRt = path.join(resources, 'glm', 'zcode.cjs.rt-pristine');
+  if (fs.existsSync(glmRt)) {
+    fs.copyFileSync(glmRt, path.join(resources, 'glm', 'zcode.cjs'));
+    fs.rmSync(glmRt);
+    console.log('restored resources/glm/zcode.cjs');
+  }
+  console.log('runtime patcher removed');
+  process.exit(0);
+}
+
 if (!fs.existsSync(appDir)) {
   if (!fs.existsSync(asarPath)) fail(`no resources/app or resources/app.asar under ${INSTALL}`);
   console.log('extracting app.asar -> resources/app ...');
