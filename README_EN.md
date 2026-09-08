@@ -4,7 +4,7 @@
 
 Adds a built-in **OpenAI model provider** to the [ZCode](https://zcode.z.ai) desktop app for Windows. Sign in with a ChatGPT subscription (Plus/Pro) through OAuth and use GPT models directly in chat without affecting the existing Z.ai or BigModel account.
 
-Verified version: ZCode **3.10.2** (stable patch baseline: `v1.0.0`). The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
+Verified versions: ZCode **3.10.2 and 3.11.2** (stable patch baseline: `v1.0.0`). The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
 
 ## Quick Start
 
@@ -31,10 +31,10 @@ node patch.js --dir <path>   :: Use a custom ZCode installation directory
 
 ### Version compatibility policy
 
-- **Verified version:** the profile matches the exact version and all anchors, syntax checks, postconditions, and the isolated repack pass before deployment is allowed.
-- **Structural candidate:** if a new version appears to match an existing profile, `--probe` produces a compatibility report; it still is not deployed automatically.
-- **Unknown version:** deploy and restore fail explicitly because no verified profile exists. There is no fuzzy patching or guessing.
-- **Adding a profile:** ZCode 3.10.1/3.10.3 or later can be added only after the corresponding pristine `app.asar` and `resources/glm/zcode.cjs` are available and the same test matrix passes. `3.10.x` wildcards are not used.
+- **Verified versions:** the profile matches the exact version and all anchors, syntax checks, postconditions, critical data-flow invariants, and the isolated repack pass before deployment is allowed.
+- **Structural candidates:** `--probe` reports which semantic transforms still locate and which exact anchors failed. The report is migration evidence only and never creates a deployable profile.
+- **Unknown versions:** deploy and restore fail explicitly because no verified profile exists. Minified identifiers are not guessed and fuzzy replacement is never attempted.
+- **Adding a profile:** a version is indexed only after its pristine `app.asar` and `resources/glm/zcode.cjs` are available, the actual bindings used by large host/renderer injections are reviewed again, and the complete test matrix passes. Version wildcards such as `3.10.x` are not used.
 
 ## Transform Framework
 
@@ -57,6 +57,8 @@ Location uses three progressive levels:
 
 On verified versions the semantic transform output must be **byte-identical** to the anchor output, otherwise the run is rejected (guards against transform drift). `--probe` reports each transform's resolution level (`semantic` / `anchor-fallback` / `failed`), so after an upgrade you can see exactly which semantic site changed. Large injections (host catalog sync, renderer JSX, and similar) stay on exact anchors but keep unique target/span diagnostics.
 
+The final bundles also pass two cross-span data-flow invariants: the OpenAI preset must be pushed into the provider array captured from `loadPresetProviders`, and both settings groups must filter the labeled display array produced by `presetProviders.map(...)`. These checks capture actual bindings rather than relying on minified names such as `n` or `pe`, so renamed or reused identifiers fail closed before deployment.
+
 ## How It Works
 
 | Layer | Implementation |
@@ -64,6 +66,7 @@ On verified versions the semantic transform output must be **byte-identical** to
 | OAuth | Uses the public Codex CLI client (`app_EMoamEEZ73f0CkXaXp7hrann`) with PKCE S256. A local loopback server at `127.0.0.1:1455` receives the callback and completes the token exchange in the host process. Tokens refresh automatically 60 seconds before expiration. |
 | Model catalog | Calls `GET chatgpt.com/backend-api/codex/models` with the bearer token, `OpenAI-Beta: responses=experimental`, and `chatgpt-account-id`. The catalog refreshes during preset synchronization and falls back to a static list when offline. |
 | Requests | Uses the Responses API with the required `store:false` and `stream:true` settings and sends only `model`, `instructions`, `input`, `tools`, `store`, `stream`, `include`, and `reasoning`. |
+| Compatibility add-on | OpenAI-compatible chat-completions endpoints use `reasoning_effort` instead of the unsupported `thinking` field; Anthropic reasoning configuration remains unchanged. |
 | UI | Adds a dedicated OpenAI provider group, the official OpenAI logo, and connect/disconnect controls. |
 
 ## Files

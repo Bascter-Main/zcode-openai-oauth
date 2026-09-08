@@ -3,7 +3,7 @@
   "id": "zcode-3.10.2",
   "version": "3.10.2",
   "appSpec": "patch-spec.json",
-  "appSpecSha256": "bec263fb3f0a01a6fa5d84e4eea8aaa5627aa1d186395f2cf8fa5f88a9a23999",
+  "appSpecSha256": "ceb461c74ed8d89b5054917823f32eaccd0de9a38516f86539845ab69c0df9d0",
   "glmSpec": "glm-spec.json",
   "glmSpecSha256": "986c3190082daf09c05bc843852a4358e1e4517869c6d4727bf3a8827be5a622",
   "appMarker": "OpenAiOAuthAdapter",
@@ -71,7 +71,7 @@
       "postconditions": [
         "openaiCodingPlan",
         "maskImage:`url(\"${n}\")`",
-        "items:e.filter(e=>e7(e.presetId)!==`openai`)"
+        "items:pe.filter(e=>e7(e.presetId)!==`openai`)"
       ]
     },
     {

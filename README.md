@@ -4,7 +4,7 @@
 
 给 [ZCode](https://zcode.z.ai) 桌面版（Windows）内置一个 **OpenAI 模型供应商**：用 ChatGPT 订阅（Plus/Pro）OAuth 登录，直接在聊天里使用 GPT 系列模型，与原有 Z.ai / BigModel 账号互不干扰。
 
-已验证版本：ZCode **3.10.2**（稳定补丁基线：`v1.0.0`）。补丁器按精确版本选择兼容性 profile；未知版本不会在部署模式下静默尝试。
+已验证版本：ZCode **3.10.2、3.11.2**（稳定补丁基线：`v1.0.0`）。补丁器按精确版本选择兼容性 profile；未知版本不会在部署模式下静默尝试。
 
 ## 一键使用
 
@@ -31,10 +31,10 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 
 ### 版本兼容政策
 
-- **已验证版本**：profile 精确匹配版本号，并且所有锚点、语法检查、postcondition 和隔离重新打包全部通过，才允许部署。
-- **结构候选**：新版本如果与现有 profile 的结构完全一致，可以用 `--probe` 得到报告；默认仍不自动部署。
-- **未知版本**：部署与恢复模式直接失败并说明没有 verified profile，不猜测、不做模糊替换。
-- **新增 profile**：ZCode 3.10.1/3.10.3 等版本只有在取得对应 pristine `app.asar` 与 `resources/glm/zcode.cjs` 并完成同等测试后，才加入 `profiles/index.json`。不使用 `3.10.x` 通配符。
+- **已验证版本**：profile 精确匹配版本号，并且所有锚点、语法检查、postcondition、关键数据流不变量和隔离重新打包全部通过，才允许部署。
+- **结构候选**：新版本可以用 `--probe` 查看哪些 semantic transform 仍能定位、哪些 exact anchor 已失效；报告只用于迁移分析，不产生可部署 profile。
+- **未知版本**：部署与恢复模式直接失败并说明没有 verified profile，不猜测压缩变量、不做模糊替换。
+- **新增 profile**：只有取得对应 pristine `app.asar` 与 `resources/glm/zcode.cjs`，重新核对大块 host/renderer 注入的实际变量绑定并完成同等测试后，才加入 `profiles/index.json`。不使用 `3.10.x` 通配符。
 
 ## 修改点位框架
 
@@ -57,6 +57,8 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 
 已验证版本上强制**逐字节等价**：语义 transform 的输出必须与 anchor 输出完全一致，否则直接拒绝（防止 transform 定义漂移）。`--probe` 会按 transform ID 报告每个点位的定位结果（`semantic` / `anchor-fallback` / `failed`），升级后一眼就能看出是哪个语义点位变了。其余大块注入（host 目录同步、renderer JSX 等）保留精确锚点，但都有唯一 target/span 诊断。
 
+补丁器还会在最终 bundle 上检查两条跨 span 数据流不变量：OpenAI preset 必须加入 `loadPresetProviders` 实际捕获的 provider 数组；设置页的普通/OpenAI 分组必须过滤由 `presetProviders.map(...)` 生成的带标签显示数组。检查动态捕获变量绑定而不是依赖 `n`、`pe` 等压缩名，因此压缩名即使在新版中变化或复用，也会在部署前 fail closed。
+
 ## 实现原理
 
 | 层 | 内容 |
@@ -64,6 +66,7 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 | OAuth | Codex CLI 公开客户端（`app_EMoamEEZ73f0CkXaXp7hrann`），PKCE S256，本地回环 `127.0.0.1:1455` 接收回调并在 host 进程内完成 token 交换；token 自动刷新（提前 60s） |
 | 模型目录 | `GET chatgpt.com/backend-api/codex/models`（Bearer + `OpenAI-Beta: responses=experimental` + `chatgpt-account-id`），每次预置同步时动态刷新，离线时回退到内置静态列表 |
 | 请求 | Responses API，`store:false`（订阅后端强制）、`stream:true`，字段白名单（只发 `model/instructions/input/tools/store/stream/include/reasoning`） |
+| 兼容附加项 | OpenAI-compatible chat-completions 端点使用 `reasoning_effort`，不发送不受支持的 `thinking` 字段；Anthropic reasoning 配置保持不变 |
 | UI | 独立的 OpenAI 分组、官方 OpenAI logo、连接/断开卡片 |
 
 ## 文件说明

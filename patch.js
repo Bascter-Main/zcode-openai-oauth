@@ -27,7 +27,6 @@ const SELF_TEST = args.includes('--self-test');
 const dirIdx = args.indexOf('--dir');
 const REQUESTED_INSTALL = dirIdx >= 0 ? args[dirIdx + 1] : null;
 const APP_PATCH_MARKER = 'OpenAiOAuthAdapter';
-const GLM_PATCH_MARKER = 'let cdx=String(this.config.url({path:""})).indexOf("chatgpt.com")>=0';
 const PROFILE_SCHEMA_VERSION = 1;
 const PROFILE_ROOT = path.join(__dirname, 'profiles');
 const OPENAI_PROVIDER_IDS = [
@@ -377,6 +376,67 @@ function verifyPostconditions(filePath, postconditions, label) {
   }
 }
 
+function criticalRendererPartitionsIssue(text, normalized) {
+  const id = '[A-Za-z_$][\\w$]*';
+  const branch = operator => [...text.matchAll(new RegExp(
+    `items:${normalized}\\.filter\\((${id})=>(${id})\\(\\1\\.presetId\\)${operator}\\x60openai\\x60\\)`,
+    'g'))];
+  const regular = branch('!==');
+  const openai = branch('===');
+  if (regular.length !== 1 || openai.length !== 1) {
+    return `expected one regular and one OpenAI partition over ${normalized}`;
+  }
+  if (regular[0][2] !== openai[0][2]) return 'provider partitions use different family classifiers';
+  return null;
+}
+
+function criticalRendererSettingsIssue(text) {
+  const id = '[A-Za-z_$][\\w$]*';
+  const mappings = [...text.matchAll(new RegExp(
+    `let (${id})=(${id})\\.map\\(\\(\\{id:(${id}),displayName:(${id}),provider:(${id})\\}\\)=>` +
+    `\\(\\{key:[\\s\\S]{0,160}?type:\\x60preset\\x60,presetId:\\3,label:\\4,provider:\\5`, 'g'))];
+  if (mappings.length !== 1) return `expected one normalized preset-provider mapping, found ${mappings.length}`;
+  return criticalRendererPartitionsIssue(text, mappings[0][1]);
+}
+
+function criticalRendererProfileIssue(spans) {
+  const mappings = [];
+  for (const span of spans) {
+    for (const match of span.replace.matchAll(/let ([A-Za-z_$][\w$]*)=([A-Za-z_$][\w$]*)\.map\(/g)) {
+      mappings.push(match);
+    }
+  }
+  if (mappings.length !== 1) return `expected one profile-level preset mapping, found ${mappings.length}`;
+  return criticalRendererPartitionsIssue(spans.map(span => span.replace).join('\n'), mappings[0][1]);
+}
+
+function criticalHostMainIssue(text) {
+  const id = '[A-Za-z_$][\\w$]*';
+  const headers = [...text.matchAll(new RegExp(
+    `async loadPresetProviders\\((${id})\\)\\{let (${id})=\\[\\],(${id})=\\[\\];`, 'g'))];
+  if (headers.length !== 1) return `expected one loadPresetProviders provider array, found ${headers.length}`;
+  const providers = headers[0][2];
+  const loads = [...text.matchAll(new RegExp(
+    `,(${id})=await this\\.loadSinglePresetProvider\\(\\[\\],[\"'\\x60]openai[\"'\\x60],` +
+    `[\\s\\S]{0,240}?\\)\\.catch\\(\\(\\)=>null\\);`, 'g'))];
+  if (loads.length !== 1) return `expected one independent OpenAI preset load, found ${loads.length}`;
+  const openai = loads[0][1];
+  const push = `${openai}&&${providers}.push(${openai});`;
+  if (countMatches(text, push) !== 1) return `OpenAI preset is not pushed into the captured provider array ${providers}`;
+  return null;
+}
+
+function criticalTargetSemanticIssue(targetId, text) {
+  if (targetId === 'renderer.settings') return criticalRendererSettingsIssue(text);
+  if (targetId === 'host.main') return criticalHostMainIssue(text);
+  return null;
+}
+
+function verifyCriticalTargetSemantics(targetId, text, label) {
+  const issue = criticalTargetSemanticIssue(targetId, text);
+  if (issue) throw compatibilityError(`${label}: critical semantic invariant failed: ${issue}`);
+}
+
 function expandTransformTemplate(template, match) {
   return template.replace(/\$(\d)/g, (m, n) => match[Number(n)] ?? '');
 }
@@ -465,7 +525,7 @@ function applySpansWithTransforms(filePath, spans, instancesBySpan, targetKey, l
     const matches = countMatches(text, spans[index].find);
     if (matches !== 1) {
       throw compatibilityError(
-        `${label}: anchor ${index + 1}/${spans.length} matched ${matches.length} times; ` +
+        `${label}: anchor ${index + 1}/${spans.length} matched ${matches} times; ` +
         'this ZCode version changed the patched code.'
       );
     }
@@ -499,6 +559,8 @@ function applyProfileTarget(profile, target, extractDir) {
   const label = `profile ${profile.id} target ${target.id} (${path.basename(filePath)})`;
   const levels = applySpansWithTransforms(filePath, profile.appSpec[target.specKey],
     profile.transformInstances, target.id, label);
+  const text = fs.readFileSync(filePath, 'utf8');
+  verifyCriticalTargetSemantics(target.id, text, label);
   syntaxCheck(filePath);
   verifyPostconditions(filePath, target.postconditions, label);
   return { filePath, levels };
@@ -902,6 +964,9 @@ function analyzeProfile(profile, extractDir, glmSource) {
       const missingPostconditions = analysis.failures.length === 0
         ? target.postconditions.filter(value => !analysis.result.includes(value))
         : [];
+      const invariantFailure = analysis.failures.length === 0
+        ? criticalTargetSemanticIssue(target.id, analysis.result)
+        : null;
       matched += analysis.matched;
       targets.push({
         id: target.id,
@@ -910,6 +975,7 @@ function analyzeProfile(profile, extractDir, glmSource) {
         total: analysis.total,
         failures: analysis.failures,
         missingPostconditions,
+        invariantFailure,
         levels: analysis.levels,
       });
     } catch (error) {
@@ -978,10 +1044,12 @@ function printProbeReport(version, reports) {
       console.log(`  transform failed: ${id}`);
     }
     for (const target of report.targets) {
-      if (target.matched === target.total && !target.error && target.missingPostconditions.length === 0) continue;
+      if (target.matched === target.total && !target.error &&
+          target.missingPostconditions.length === 0 && !target.invariantFailure) continue;
       const detail = target.error || [
         ...target.failures.map(item => `anchor ${item.anchor} matched ${item.count}`),
         ...target.missingPostconditions.map(value => `missing postcondition ${value}`),
+        ...(target.invariantFailure ? [`critical invariant ${target.invariantFailure}`] : []),
       ].join('; ');
       console.log(`  ${target.id}: ${target.matched}/${target.total}${detail ? ` — ${detail}` : ''}`);
     }
@@ -1072,6 +1140,40 @@ function selfTest() {
   assert(unknownProfileError?.code === 'ZCODE_PATCH_INCOMPATIBLE' &&
     unknownProfileError.message.includes('no verified compatibility profile for ZCode 3.10.3'),
     'unknown versions fail closed before patch preparation');
+
+  const rendererInvariantFixture = 'function menu({presetProviders:raw7,other:x}){' +
+    'let view9=raw7.map(({id:a,displayName:b,provider:c})=>' +
+    '({key:key(a),type:`preset`,presetId:a,label:b,provider:c}));' +
+    'return[{id:`preset`,items:view9.filter(row=>family(row.presetId)!==`openai`)},' +
+    '{id:`openai`,items:view9.filter(row=>family(row.presetId)===`openai`)}]}';
+  assert(criticalTargetSemanticIssue('renderer.settings', rendererInvariantFixture) === null,
+    'renderer invariant accepts renamed raw and normalized provider bindings');
+  assert(criticalTargetSemanticIssue('renderer.settings',
+    rendererInvariantFixture.replaceAll('items:view9.filter', 'items:raw7.filter')) !== null,
+    'renderer invariant rejects filtering the raw provider array');
+  assert(criticalTargetSemanticIssue('renderer.settings',
+    rendererInvariantFixture.replace('family(row.presetId)===', 'otherFamily(row.presetId)===')) !== null,
+    'renderer invariant rejects mismatched family classifiers');
+  assert(criticalTargetSemanticIssue('renderer.settings',
+    rendererInvariantFixture + rendererInvariantFixture) !== null,
+    'renderer invariant rejects ambiguous mappings');
+
+  const hostInvariantFixture = 'async loadPresetProviders(t0){let providers7=[],models8=[];' +
+    'let keys=new Map(),openai9=await this.loadSinglePresetProvider([],"openai",null)' +
+    '.catch(()=>null);openai9&&providers7.push(openai9);let remote=null}';
+  assert(criticalTargetSemanticIssue('host.main', hostInvariantFixture) === null,
+    'host invariant accepts renamed provider and OpenAI result bindings');
+  assert(criticalTargetSemanticIssue('host.main',
+    hostInvariantFixture.replace('providers7.push(openai9)', 'zaiStartPlan.push(openai9)')) !== null,
+    'host invariant rejects pushing OpenAI into an unrelated binding');
+  assert(criticalTargetSemanticIssue('host.main', '') !== null,
+    'host invariant rejects a missing provider loader');
+
+  for (const candidate of profiles) {
+    const target = candidate.targets.find(item => item.id === 'renderer.settings');
+    assert(criticalRendererProfileIssue(candidate.appSpec[target.specKey]) === null,
+      `${candidate.version} renderer spans preserve normalized provider data flow`);
+  }
 
   const profileFixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-profile-test-'));
   try {
@@ -1302,6 +1404,18 @@ function selfTest() {
     chatCompletionsReasoningSpan.replace.includes('openaiCompatible:{reasoningEffort:t}') &&
     chatCompletionsReasoningSpan.replace.includes('openaiCompatible:{reasoningEffort:e===G_?"high":"none"}'),
     'OpenAI-compatible reasoning profiles use reasoningEffort instead of thinking');
+  const reasoningProfiles = Function('l2e', 'tfr', 'G_', 'u2e',
+    `${chatCompletionsReasoningSpan.replace};return {LSo,BSo}`
+  )(['high', 'max'], 1024, 'enabled', ['enabled', 'disabled']);
+  const deepSeekReasoning = reasoningProfiles.LSo();
+  const toggleReasoning = reasoningProfiles.BSo();
+  assert(deepSeekReasoning.max.openaiCompatible.reasoningEffort === 'max' &&
+    deepSeekReasoning.max.openaiCompatible.thinking === undefined &&
+    deepSeekReasoning.max.anthropic.effort === 'max' &&
+    deepSeekReasoning.max.anthropic.thinking.budgetTokens === 1024 &&
+    toggleReasoning.enabled.openaiCompatible.reasoningEffort === 'high' &&
+    toggleReasoning.disabled.openaiCompatible.reasoningEffort === 'none',
+    'OpenAI-compatible reasoning fix preserves Anthropic profiles and maps both toggle states');
 
   const dynamic = spec['out/host/index.js'].find(span =>
     span.find.startsWith('async loadSinglePresetProvider')
