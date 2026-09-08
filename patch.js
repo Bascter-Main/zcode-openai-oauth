@@ -1536,6 +1536,14 @@ function selfTest() {
       !iconOverride.replace.includes('%2310A37F'),
       'OpenAI icon follows the current theme color');
 
+    const iconOverride3112 = profiles.find(candidate => candidate.version === '3.11.2')
+      .appSpec['out/renderer/assets/styles-DyAcaLKy.js'].find(span =>
+        span.replace.includes('UUe,zai:s_,openai:'));
+    assert(iconOverride3112 &&
+      iconOverride3112.replace.includes('backgroundColor:`currentColor`') &&
+      iconOverride3112.replace.includes('maskImage:`url("${n}")`'),
+      'OpenAI icon follows the current theme color (3.11.2)');
+
     for (const rel of ['out/host/index.js', 'out/main/index.js', 'out/scheduler/index.js']) {
       const oauthPreset = spec[rel].find(span => span.replace.includes('name:"OpenAI - OAuth"')).replace;
       assert(oauthPreset.includes('contextWindow:272000'), `${rel} fallback context is conservative`);
