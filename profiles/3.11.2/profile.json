@@ -5,7 +5,7 @@
   "appSpec": "patch-spec.json",
   "appSpecSha256": "4566dbd58fddd63a82a6d810e1615fab0656eb3a370b35d3c2dc2830170327e6",
   "glmSpec": "glm-spec.json",
-  "glmSpecSha256": "2d160baee872cf21acbc5d4ce3822a00cc0443b1004b4e43aa7723f98593eea8",
+  "glmSpecSha256": "06e5e49504570a0951da9b3e98944ff5f2ce4aef4f96717e22898ce4a0030aeb",
   "appMarker": "OpenAiOAuthAdapter",
   "transforms": [
     "schema.oauth-method-enum",
@@ -145,7 +145,9 @@
       "se=cdx?!1:P?.store",
       "deepseek-v4-thinking-depth",
       "openaiCompatible:{reasoningEffort:e===G_?\"high\":\"none\"}",
-      "function LSo(){let e=lfr();return Object.fromEntries(l2e.map(t=>[t,{...e[t],openaiCompatible:{reasoningEffort:t}"
+      "function LSo(){let e=lfr();return Object.fromEntries(l2e.map(t=>[t,{...e[t],openaiCompatible:{reasoningEffort:t}",
+      "querySource:\"web_fetch_processing\"",
+      "()=>cgt(o,{messages:u,tools:[]"
     ]
   }
 }

@@ -1275,6 +1275,13 @@ function selfTest() {
     toggleReasoning.disabled.openaiCompatible.reasoningEffort === 'none',
     'OpenAI-compatible reasoning fix preserves Anthropic profiles and maps both toggle states');
 
+  const webFetchStreamSpan = profiles.find(candidate => candidate.version === '3.11.2')
+    .glmSpec.spans.find(span => span.find.includes('()=>o.generateText({messages:u,tools:[]'));
+  assert(webFetchStreamSpan &&
+    webFetchStreamSpan.replace.includes('()=>cgt(o,{messages:u,tools:[]') &&
+    !webFetchStreamSpan.replace.includes('()=>o.generateText('),
+    'WebFetch prompt processing reuses the OpenAI stream collector');
+
   const dynamic = spec['out/host/index.js'].find(span =>
     span.find.startsWith('async loadSinglePresetProvider')
   ).replace;

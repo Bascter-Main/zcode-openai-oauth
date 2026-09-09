@@ -112,20 +112,24 @@ for (const target of profile.targets) {
 
 // Flat-patch preload bundles and the glm CLI bundle (strict at install time).
 const flatPatch = (filePath, spans, targetKey, postconditions, label) => {
-  const text = fs.readFileSync(filePath, 'utf8');
+  const backupPath = `${filePath}.rt-pristine`;
+  const current = fs.readFileSync(filePath, 'utf8');
+  // Reinstalls must rebuild from pristine so a newer profile can add or change
+  // spans without being blocked by the previous profile's replacements.
+  const text = fs.existsSync(backupPath) ? fs.readFileSync(backupPath, 'utf8') : current;
   let result;
   try {
     result = core.applySpansText(text, spans, instancesBySpan, targetKey, { strict: true, label });
   } catch (error) {
-    if (postconditions.every(v => text.includes(v))) {
-      console.log(`  already patched, skipped: ${label}`);
+    if (!fs.existsSync(backupPath) && postconditions.every(v => current.includes(v))) {
+      console.log(`  already patched without runtime backup, skipped: ${label}`);
       return;
     }
     throw error;
   }
   const missing = postconditions.filter(v => !result.text.includes(v));
   if (missing.length) fail(`${label} missing postconditions after patch: ${missing.join(', ')}`);
-  if (!fs.existsSync(`${filePath}.rt-pristine`)) fs.writeFileSync(`${filePath}.rt-pristine`, text);
+  if (!fs.existsSync(backupPath)) fs.writeFileSync(backupPath, text);
   fs.writeFileSync(filePath, result.text);
   console.log(`  flat-patched: ${label}`);
 };
