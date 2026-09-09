@@ -37,6 +37,7 @@ const sha = text => createHash('sha256').update(text).digest('hex');
 
 // expected output per target, computed strictly from pristine on-disk bundles
 const expected = new Map();
+const flatDelivered = new Map();
 for (const [rel, target] of Object.entries(config.esmTargets)) {
   const text = fs.readFileSync(path.join(config.appRoot, rel), 'utf8');
   const result = core.applySpansText(text, profile.appSpec[target.specKey], instancesBySpan,
@@ -55,6 +56,32 @@ for (const target of config.rendererTargets) {
   expected.set(target.targetId, { sha256: sha(result.text), file: path.basename(file) });
 }
 
+// Preload bundles and the GLM CLI are flat-patched. Verify their on-disk bytes
+// against a fresh strict transform of the .rt-pristine backup as well.
+const addFlatTarget = (targetId, file, spans, postconditions) => {
+  const backup = `${file}.rt-pristine`;
+  if (!fs.existsSync(backup)) fail(`${targetId} has no runtime pristine backup: ${backup}`);
+  const source = fs.readFileSync(backup, 'utf8');
+  const result = core.applySpansText(source, spans, instancesBySpan, targetId,
+    { strict: true, label: targetId });
+  expected.set(targetId, { sha256: sha(result.text), file: path.basename(file) });
+  const text = fs.readFileSync(file, 'utf8');
+  flatDelivered.set(targetId, {
+    delivered: 'flat-patched',
+    sha256: sha(text),
+    failures: [],
+    invariant: core.criticalTargetSemanticIssue(targetId, text),
+    missingPostconditions: postconditions.filter(value => !text.includes(value)),
+  });
+};
+for (const target of profile.targets.filter(candidate =>
+  candidate.path?.replace(/\\/g, '/').startsWith('out/preload/'))) {
+  addFlatTarget(target.id, path.join(config.appRoot, target.path),
+    profile.appSpec[target.specKey], target.postconditions || []);
+}
+addFlatTarget('glm', path.join(path.dirname(config.appRoot), profile.glm.path.replace(/^resources[\\/]/, '')),
+  profile.glmSpec.spans, [profile.glm.marker, ...profile.glm.postconditions]);
+
 // delivered output per target, from the last run's log
 const logPath = config.logPath;
 if (!fs.existsSync(logPath)) fail(`no runtime log at ${logPath} — launch the app first`);
@@ -67,6 +94,7 @@ for (const line of fs.readFileSync(logPath, 'utf8').split('\n')) {
     delivered.set(entry.targetId, entry);
   }
 }
+for (const [targetId, entry] of flatDelivered) delivered.set(targetId, entry);
 
 let bad = 0;
 console.log('target'.padEnd(22), 'delivery'.padEnd(10), 'match'.padEnd(6), 'detail');
@@ -78,7 +106,9 @@ for (const [targetId, want] of expected) {
     continue;
   }
   const problems = [];
-  if (got.delivered !== 'patched') problems.push(`delivered=${got.delivered}`);
+  if (got.delivered !== 'patched' && got.delivered !== 'flat-patched') {
+    problems.push(`delivered=${got.delivered}`);
+  }
   if (got.sha256 !== want.sha256) problems.push('sha256 mismatch');
   if (got.failures && got.failures.length) problems.push(`failures=${JSON.stringify(got.failures)}`);
   if (got.invariant) problems.push(`invariant: ${got.invariant}`);
@@ -93,4 +123,4 @@ if (bad) {
   console.error(`\nverify-runtime: ${bad} target(s) failed`);
   process.exit(1);
 }
-console.log(`\nverify-runtime: all ${expected.size} runtime targets delivered byte-identical to the strict static transform`);
+console.log(`\nverify-runtime: all ${expected.size} runtime and flat-patched targets are byte-identical to the strict static transform`);
