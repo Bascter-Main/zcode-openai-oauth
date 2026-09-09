@@ -5,7 +5,7 @@
   "appSpec": "patch-spec.json",
   "appSpecSha256": "ceb461c74ed8d89b5054917823f32eaccd0de9a38516f86539845ab69c0df9d0",
   "glmSpec": "glm-spec.json",
-  "glmSpecSha256": "986c3190082daf09c05bc843852a4358e1e4517869c6d4727bf3a8827be5a622",
+  "glmSpecSha256": "d381104957293826476bbdf3ab18d1a143e4cf8ec9c8bc744d3ecce2da597760",
   "appMarker": "OpenAiOAuthAdapter",
   "transforms": [
     "schema.oauth-method-enum",

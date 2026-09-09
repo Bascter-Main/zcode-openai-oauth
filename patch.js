@@ -1231,13 +1231,13 @@ function selfTest() {
     memoryStream.replace.includes('case"finish"') &&
     memoryStream.replace.includes('case"error"'),
     'Project Memory uses Codex streaming and collects terminal events');
-  const collectorStart = memoryStream.replace.indexOf('async function cgt(');
+  const collectorStart = memoryStream.replace.indexOf('async function zcodeOpenAiStreamText(');
   const collectorEnd = memoryStream.replace.indexOf('async function pgt(', collectorStart);
   assert(collectorStart >= 0 && collectorEnd > collectorStart,
     'Project Memory stream collector can be isolated for execution tests');
   const collectProjectMemory = Function(
     'v8', 'qV',
-    `${memoryStream.replace.slice(collectorStart, collectorEnd)};return cgt`
+    `${memoryStream.replace.slice(collectorStart, collectorEnd)};return zcodeOpenAiStreamText`
   )(toolCalls => toolCalls, error => error);
   const glmText = JSON.stringify(glmSpec);
   assert(!glmText.includes('"gpt-5.6-luna"') &&
@@ -1278,9 +1278,11 @@ function selfTest() {
   const webFetchStreamSpan = profiles.find(candidate => candidate.version === '3.11.2')
     .glmSpec.spans.find(span => span.find.includes('()=>o.generateText({messages:u,tools:[]'));
   assert(webFetchStreamSpan &&
-    webFetchStreamSpan.replace.includes('()=>cgt(o,{messages:u,tools:[]') &&
+    webFetchStreamSpan.replace.includes('()=>zcodeOpenAiStreamText(o,{messages:u,tools:[]') &&
     !webFetchStreamSpan.replace.includes('()=>o.generateText('),
     'WebFetch prompt processing reuses the OpenAI stream collector');
+  assert(!profiles.some(candidate => JSON.stringify(candidate.glmSpec).includes('function cgt(')),
+    'stream collector does not use a collision-prone minified identifier');
 
   const dynamic = spec['out/host/index.js'].find(span =>
     span.find.startsWith('async loadSinglePresetProvider')
