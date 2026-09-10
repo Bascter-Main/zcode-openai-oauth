@@ -1553,6 +1553,16 @@ function selfTest() {
       iconOverride3112.replace.includes('maskImage:`url("${n}")`'),
       'OpenAI icon follows the current theme color (3.11.2)');
 
+    for (const candidate of profiles) {
+      const hostSpec = candidate.appSpec['out/host/index.js'];
+      const enableBranch = hostSpec.find(span =>
+        span.replace.includes('openaiCodingPlan&&b?{...v,apiKey:b,enabled:!0,systemDisabledReason:void 0,'));
+      const includeClause = hostSpec.find(span => span.replace.includes('openaiCodingPlan&&!!b}'));
+      assert(enableBranch && includeClause &&
+        !hostSpec.some(span => span.replace.includes('openaiCodingPlan&&b&&v.enabled!==!1')),
+        `${candidate.version}: a connected OpenAI coding plan is enabled and listed in the provider registry`);
+    }
+
     for (const rel of ['out/host/index.js', 'out/main/index.js', 'out/scheduler/index.js']) {
       const oauthPreset = spec[rel].find(span => span.replace.includes('name:"OpenAI - OAuth"')).replace;
       assert(oauthPreset.includes('contextWindow:272000'), `${rel} fallback context is conservative`);

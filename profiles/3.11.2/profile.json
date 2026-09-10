@@ -3,7 +3,7 @@
   "id": "zcode-3.11.2",
   "version": "3.11.2",
   "appSpec": "patch-spec.json",
-  "appSpecSha256": "4566dbd58fddd63a82a6d810e1615fab0656eb3a370b35d3c2dc2830170327e6",
+  "appSpecSha256": "baa6278b8de0aeaa6640ad51e4be41dcf72185baa35b6d7fecc9239f051badb8",
   "glmSpec": "glm-spec.json",
   "glmSpecSha256": "e3602b9f34dd05c233066ddc3bfe10f6bb6f7bc16b74c7c512fb66e0751cba20",
   "appMarker": "OpenAiOAuthAdapter",
