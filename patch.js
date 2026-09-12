@@ -1283,6 +1283,13 @@ function selfTest() {
     'WebFetch prompt processing reuses the OpenAI stream collector');
   assert(!profiles.some(candidate => JSON.stringify(candidate.glmSpec).includes('function cgt(')),
     'stream collector does not use a collision-prone minified identifier');
+  const webFetchTimeoutSpans = profiles.find(candidate => candidate.version === '3.11.2')
+    .glmSpec.spans.filter(span => span.replace.includes('WebFetch was cancelled before') ||
+      span.replace.includes('capability:"Fetch a public URL'));
+  assert(webFetchTimeoutSpans.some(span => span.replace.includes('timeoutMs:12e4')) &&
+    webFetchTimeoutSpans.some(span => span.replace.includes('defaultMs:12e4,maxMs:12e4')) &&
+    !webFetchTimeoutSpans.some(span => span.find.includes('t.request({url:n.toString()')),
+    'WebFetch outer budget covers fetch plus model processing without extending the HTTP timeout');
 
   const dynamic = spec['out/host/index.js'].find(span =>
     span.find.startsWith('async loadSinglePresetProvider')
