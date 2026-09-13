@@ -1338,18 +1338,30 @@ function selfTest() {
     'runtime filters hidden models and exposes fresh targeted lookup');
   assert(dynamic.includes('["gpt-6-astra","GPT-6-Astra",["low","medium","high","xhigh","max"],"low",262144]') &&
     dynamic.includes('context_window=272000') &&
-    dynamic.includes('astra=m2.find(x=>x.id==="gpt-6-astra")') &&
-    dynamic.includes('rm.some(x=>x.id==="gpt-6-astra")||!astra?rm:[astra,...rm]') &&
-    !dynamic.includes('backend-api/models') && !dynamic.includes('endsWith("-wm")'),
-    'verified Codex baseline includes Astra without guessing workspace-model slugs');
+    dynamic.includes('["plus","pro","team","business","enterprise"].includes(o)') &&
+    dynamic.includes('x.slug==="gpt-6-astra-wm"&&x.is_work_mode_model===!0') &&
+    dynamic.includes('rm.some(x=>x.id==="gpt-6-astra")||!astraOk||!astra?rm:[astra,...rm]') &&
+    !dynamic.includes('endsWith("-wm")') && !dynamic.includes('slice(0,-3)'),
+    'Astra requires an eligible plan plus the exact account catalog entry without generic workspace-model inference');
+  const planAllowed = plan => ['plus', 'pro', 'team', 'business', 'enterprise'].includes(plan);
+  const accountAllows = models => models.some(model =>
+    model.slug === 'gpt-6-astra-wm' && model.is_work_mode_model === true);
+  assert(!planAllowed('free') && !planAllowed('go') && planAllowed('plus') &&
+    planAllowed('pro') && planAllowed('team') && planAllowed('business') &&
+    planAllowed('enterprise') && accountAllows([{ slug: 'gpt-6-astra-wm', is_work_mode_model: true }]) &&
+    !accountAllows([{ slug: 'gpt-5.6-sol-wm', is_work_mode_model: true }]) &&
+    !accountAllows([{ slug: 'gpt-6-astra-wm', is_work_mode_model: false }]),
+    'Astra eligibility fails closed for Free/Go and unrelated or disabled workspace models');
   const astra = { id: 'gpt-6-astra', source: 'baseline' };
   const remoteWithoutAstra = [{ id: 'gpt-5.6-sol', source: 'remote' }];
   const remoteWithAstra = [{ id: 'gpt-6-astra', source: 'remote' }, ...remoteWithoutAstra];
-  const overlay = remote => remote.some(model => model.id === astra.id) ? remote : [astra, ...remote];
-  assert(overlay(remoteWithoutAstra)[0] === astra &&
-    overlay(remoteWithAstra)[0].source === 'remote' &&
-    !overlay(remoteWithoutAstra).some(model => model.id === 'gpt-5.4'),
-    'successful remote catalog keeps only its visible models plus missing verified Astra');
+  const overlay = (remote, eligible) => remote.some(model => model.id === astra.id) || !eligible
+    ? remote : [astra, ...remote];
+  assert(overlay(remoteWithoutAstra, true)[0] === astra &&
+    overlay(remoteWithoutAstra, false)[0].source === 'remote' &&
+    overlay(remoteWithAstra, false)[0].source === 'remote' &&
+    !overlay(remoteWithoutAstra, true).some(model => model.id === 'gpt-5.4'),
+    'remote Astra is authoritative; otherwise only eligible accounts receive the verified baseline');
   const astraModel = makeModel({
     slug: 'gpt-6-astra', display_name: 'GPT-6-Astra',
     supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max'],
