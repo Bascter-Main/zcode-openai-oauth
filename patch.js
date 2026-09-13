@@ -1336,6 +1336,29 @@ function selfTest() {
   assert(dynamic.includes('visibility!=="hide"') &&
     dynamic.includes('fetchFreshOpenAiCatalogModel'),
     'runtime filters hidden models and exposes fresh targeted lookup');
+  assert(dynamic.includes('["gpt-6-astra","GPT-6-Astra",["low","medium","high","xhigh","max"],"low",262144]') &&
+    dynamic.includes('context_window=272000') &&
+    dynamic.includes('astra=m2.find(x=>x.id==="gpt-6-astra")') &&
+    dynamic.includes('rm.some(x=>x.id==="gpt-6-astra")||!astra?rm:[astra,...rm]') &&
+    !dynamic.includes('backend-api/models') && !dynamic.includes('endsWith("-wm")'),
+    'verified Codex baseline includes Astra without guessing workspace-model slugs');
+  const astra = { id: 'gpt-6-astra', source: 'baseline' };
+  const remoteWithoutAstra = [{ id: 'gpt-5.6-sol', source: 'remote' }];
+  const remoteWithAstra = [{ id: 'gpt-6-astra', source: 'remote' }, ...remoteWithoutAstra];
+  const overlay = remote => remote.some(model => model.id === astra.id) ? remote : [astra, ...remote];
+  assert(overlay(remoteWithoutAstra)[0] === astra &&
+    overlay(remoteWithAstra)[0].source === 'remote' &&
+    !overlay(remoteWithoutAstra).some(model => model.id === 'gpt-5.4'),
+    'successful remote catalog keeps only its visible models plus missing verified Astra');
+  const astraModel = makeModel({
+    slug: 'gpt-6-astra', display_name: 'GPT-6-Astra',
+    supported_reasoning_levels: ['low', 'medium', 'high', 'xhigh', 'max'],
+    default_reasoning_level: 'low', input_modalities: ['text', 'image'], context_window: 262144,
+  });
+  assert(astraModel.contextWindow === 262144 && astraModel.reasoning.defaultLevel === 'low' &&
+    Object.keys(astraModel.reasoning.levels).join(',') === 'low,medium,high,xhigh,max' &&
+    !astraModel.reasoning.levels.ultra,
+    'Astra baseline uses verified context and Responses reasoning efforts');
   const independentOpenAiLoad = spec['out/host/index.js'].find(span =>
     span.replace.includes('loadSinglePresetProvider([],"openai"')
   );

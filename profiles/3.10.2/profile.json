@@ -3,7 +3,7 @@
   "id": "zcode-3.10.2",
   "version": "3.10.2",
   "appSpec": "patch-spec.json",
-  "appSpecSha256": "0be492246284592eccf0b434cd4093a9105be5b24221c62efd736309abb4845e",
+  "appSpecSha256": "5742703e851c65b273ea20d6f4a7123e161333c99329f7238f7a2f3d58ea4829",
   "glmSpec": "glm-spec.json",
   "glmSpecSha256": "d381104957293826476bbdf3ab18d1a143e4cf8ec9c8bc744d3ecce2da597760",
   "appMarker": "OpenAiOAuthAdapter",
@@ -27,7 +27,10 @@
         "OpenAiOAuthAdapter",
         "repairOpenAiContextWindow",
         "catalogContextWindow",
-        "loadSinglePresetProvider([],\"openai\""
+        "loadSinglePresetProvider([],\"openai\"",
+        "gpt-6-astra",
+        "astra=m2.find(x=>x.id===\"gpt-6-astra\")",
+        "\"low\",262144]"
       ]
     },
     {
