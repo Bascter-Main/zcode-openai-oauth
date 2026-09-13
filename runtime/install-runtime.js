@@ -18,6 +18,8 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
+const { randomUUID } = require('crypto');
+const { spawnSync } = require('child_process');
 const asar = require('@electron/asar');
 const core = require('../patch-core.cjs');
 
@@ -36,6 +38,21 @@ const fail = message => { console.error(`install-runtime: ${message}`); process.
 const resources = path.join(INSTALL, 'resources');
 const appDir = path.join(resources, 'app');
 const asarPath = path.join(resources, 'app.asar');
+
+function targetZCodeRunning() {
+  if (process.platform !== 'win32' || POC) return false;
+  const exe = path.join(INSTALL, 'ZCode.exe').replace(/'/g, "''");
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-Command',
+    `$target=[IO.Path]::GetFullPath('${exe}').ToLowerInvariant();` +
+    `(Get-CimInstance Win32_Process | Where-Object {` +
+    ` $_.ExecutablePath -and $_.ExecutablePath.ToLowerInvariant() -eq $target } | Measure-Object).Count`],
+  { encoding: 'utf8', windowsHide: true });
+  return result.status === 0 && Number.parseInt(result.stdout.trim(), 10) > 0;
+}
+
+if (targetZCodeRunning()) {
+  fail('the target ZCode installation is still running. Exit it from the tray, then rerun this command.');
+}
 
 // --restore: remove the extracted app dir, bring back the pristine asar, and
 // restore the glm CLI bundle. Run with ZCode closed.
@@ -159,8 +176,9 @@ const utilityEntries = ['host.main', 'scheduler.models']
   .map(t => t.path);
 const originalMain = typeof pkg.main === 'string' && !pkg.main.includes('.zcode-runtime')
   ? pkg.main.replace(/^\.\//, '') : 'out/main/index.js';
+const generation = `${Date.now()}-${randomUUID()}`;
 fs.writeFileSync(path.join(rtDir, 'config.json'), JSON.stringify({
-  version, profileId: profile.id, poc: POC,
+  version, profileId: profile.id, generation, poc: POC,
   appRoot: appDir,
   logPath: path.join(rtDir, 'runtime.log'),
   profilePath: path.join(rtDir, 'runtime-profile.json'),
@@ -177,4 +195,6 @@ fs.writeFileSync(pkgPath, JSON.stringify(pkg, null, 2));
 console.log(`runtime patcher installed for ZCode ${version} (profile ${profile.id})`);
 console.log(`  esm targets: ${Object.keys(esmTargets).length}, renderer targets: ${rendererTargets.length}, ` +
   `flat-patched: ${preloadTargets.length} preload + glm`);
+console.log(`  generation: ${generation}`);
 console.log(`  log: ${path.join(rtDir, 'runtime.log')}`);
+console.log('  restart ZCode before running verify-runtime.js');

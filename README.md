@@ -41,10 +41,12 @@ node patch.js --dir <路径> :: 指定自定义安装目录
 默认流程在部署时把补丁写进 `app.asar`。运行时模式不改写 bundle：解包后在**加载时**按同一份 profile 变换代码——main/host/scheduler 经模块加载钩子，renderer 经协议层改写。每个点位独立失败降级：某个锚点在新版本失效时，对应功能缺席，但应用照常运行，不会产出坏包。preload 与 agent 运行时无法被加载时拦截，仍在安装时扁平修补（带 `.rt-pristine` 备份）。
 
 ```bat
-:: 安装（需先关闭 ZCode；若此前使用过静态补丁，先 node patch.js --restore）
+:: 安装（必须先从托盘完全退出 ZCode；若仍有目标进程，安装器会拒绝写入）
+:: 若此前使用过静态补丁，先 node patch.js --restore
 node runtime/install-runtime.js --dir "D:\Program Files\ZCode"
 
-:: 启动一次 ZCode 后，校验运行时投递与静态严格变换逐字节一致
+:: 安装后重新启动 ZCode，等待主窗口加载完成，再校验当前安装 generation 的投递
+:: 不重启就验证会明确提示重启，不会拿旧进程日志误报哈希不匹配
 node runtime/verify-runtime.js --dir "D:\Program Files\ZCode"
 
 :: 卸载（需先关闭 ZCode）

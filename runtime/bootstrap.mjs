@@ -35,7 +35,11 @@ try {
 
 const log = entry => {
   if (!config) return;
-  try { fs.appendFileSync(config.logPath, JSON.stringify(entry) + '\n'); } catch {}
+  try {
+    fs.appendFileSync(config.logPath, JSON.stringify({
+      ...entry, generation: config.generation, at: new Date().toISOString(),
+    }) + '\n');
+  } catch {}
 };
 
 async function handoff() {

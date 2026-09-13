@@ -29,6 +29,9 @@ const fail = message => { console.error(`verify-runtime: ${message}`); process.e
 if (!fs.existsSync(path.join(rtDir, 'config.json'))) fail('runtime patcher is not installed here');
 
 const config = JSON.parse(fs.readFileSync(path.join(rtDir, 'config.json'), 'utf8'));
+if (!config.generation) {
+  fail('this installation predates generation tracking; exit ZCode and reinstall runtime mode first');
+}
 const profile = JSON.parse(fs.readFileSync(config.profilePath, 'utf8'));
 const registry = JSON.parse(fs.readFileSync(config.registryPath, 'utf8'));
 const instancesBySpan = core.buildTransformInstances(profile, registry);
@@ -90,7 +93,8 @@ for (const line of fs.readFileSync(logPath, 'utf8').split('\n')) {
   if (!line) continue;
   let entry;
   try { entry = JSON.parse(line); } catch { continue; }
-  if ((entry.event === 'esm-target' || entry.event === 'renderer-target') && entry.targetId) {
+  if (entry.generation === config.generation &&
+      (entry.event === 'esm-target' || entry.event === 'renderer-target') && entry.targetId) {
     delivered.set(entry.targetId, entry);
   }
 }
@@ -102,7 +106,8 @@ for (const [targetId, want] of expected) {
   const got = delivered.get(targetId);
   if (!got) {
     bad++;
-    console.log(targetId.padEnd(22), 'MISSING'.padEnd(10), ''.padEnd(6), `${want.file} never loaded`);
+    console.log(targetId.padEnd(22), 'MISSING'.padEnd(10), ''.padEnd(6),
+      `${want.file} was not loaded by generation ${config.generation}`);
     continue;
   }
   const problems = [];
@@ -120,7 +125,13 @@ for (const [targetId, want] of expected) {
     (problems.length ? 'NO' : 'yes').padEnd(6), problems.join('; '));
 }
 if (bad) {
-  console.error(`\nverify-runtime: ${bad} target(s) failed`);
+  const runtimeMissing = [...expected.keys()].filter(targetId =>
+    !flatDelivered.has(targetId) && !delivered.has(targetId));
+  if (runtimeMissing.length) {
+    console.error('\nverify-runtime: the current installation generation has not been fully loaded. ' +
+      'Exit ZCode completely, restart it, wait for the main window, then rerun verification.');
+  }
+  console.error(`verify-runtime: ${bad} target(s) failed`);
   process.exit(1);
 }
 console.log(`\nverify-runtime: all ${expected.size} runtime and flat-patched targets are byte-identical to the strict static transform`);

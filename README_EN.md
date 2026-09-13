@@ -41,10 +41,12 @@ node patch.js --dir <path>   :: Use a custom ZCode installation directory
 The default flow writes the patch into `app.asar` at deploy time. Runtime mode leaves the bundles untouched on disk: after extraction, the same profile is applied **at load time** — main/host/scheduler through module loader hooks, the renderer through protocol-level response rewriting. Every site degrades independently: if an anchor stops matching after an update, that feature is simply absent while the app keeps running; a broken package is never produced. Preloads and the agent runtime cannot be intercepted at load time, so they are flat-patched at install time (with `.rt-pristine` backups).
 
 ```bat
-:: Install (close ZCode first; if the static patch was applied before, run node patch.js --restore first)
+:: Install (fully exit ZCode from the tray first; the installer refuses to write while the target runs)
+:: If the static patch was applied before, run node patch.js --restore first
 node runtime/install-runtime.js --dir "D:\Program Files\ZCode"
 
-:: After launching ZCode once, verify runtime delivery is byte-identical to the strict static transform
+:: Restart ZCode after installation, wait for the main window, then verify the current install generation
+:: Verifying without a restart reports that requirement instead of comparing stale-process hashes
 node runtime/verify-runtime.js --dir "D:\Program Files\ZCode"
 
 :: Uninstall (close ZCode first)

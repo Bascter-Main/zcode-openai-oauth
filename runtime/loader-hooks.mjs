@@ -12,6 +12,7 @@ const core = require('./patch-core.cjs');
 
 let targets = null;
 let logPath = null;
+let generation = null;
 
 const norm = p => {
   const n = path.normalize(p);
@@ -19,12 +20,17 @@ const norm = p => {
 };
 
 function log(entry) {
-  try { fs.appendFileSync(logPath, JSON.stringify(entry) + '\n'); } catch {}
+  try {
+    fs.appendFileSync(logPath, JSON.stringify({
+      ...entry, generation, at: new Date().toISOString(),
+    }) + '\n');
+  } catch {}
 }
 
 export async function initialize(data) {
   const config = JSON.parse(fs.readFileSync(data.configPath, 'utf8'));
   logPath = config.logPath;
+  generation = config.generation;
   const profile = JSON.parse(fs.readFileSync(config.profilePath, 'utf8'));
   const registry = JSON.parse(fs.readFileSync(config.registryPath, 'utf8'));
   const instancesBySpan = core.buildTransformInstances(profile, registry);
