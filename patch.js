@@ -1371,6 +1371,24 @@ function selfTest() {
     Object.keys(astraModel.reasoning.levels).join(',') === 'low,medium,high,xhigh,max' &&
     !astraModel.reasoning.levels.ultra,
     'Astra baseline uses verified context and Responses reasoning efforts');
+  for (const candidate of profiles) {
+    const astraGate = candidate.appSpec['out/host/index.js'].find(span =>
+      span.replace.includes('async hasOpenAiAstraAccess'));
+    assert(astraGate &&
+      astraGate.replace.includes(`"User-Agent":"ZCode/${candidate.version}"`) &&
+      astraGate.replace.includes('for(let a=0;a<2;a++)') &&
+      astraGate.replace.includes('[403,429,500,502,503,504].includes(r.status)'),
+      `${candidate.version}: Astra account gate identifies ZCode and retries one transient response`);
+  }
+  const settingsOpenAiDetails = profiles.find(candidate => candidate.version === '3.11.2')
+    .appSpec['out/renderer/assets/styles-DyAcaLKy.js'].find(span =>
+      span.replace.includes('if(e.oauthProviderId===`openai`)return'));
+  assert(settingsOpenAiDetails &&
+    settingsOpenAiDetails.replace.includes('models:iFt(e.provider)') &&
+    settingsOpenAiDetails.replace.includes('readOnly:!0') &&
+    settingsOpenAiDetails.replace.indexOf('models:iFt(e.provider)') <
+      settingsOpenAiDetails.replace.indexOf('});if(e.type===`preset`)'),
+    'OpenAI connection details include the native read-only model list');
   const independentOpenAiLoad = spec['out/host/index.js'].find(span =>
     span.replace.includes('loadSinglePresetProvider([],"openai"')
   );

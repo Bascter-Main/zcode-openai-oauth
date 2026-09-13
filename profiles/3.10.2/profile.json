@@ -3,7 +3,7 @@
   "id": "zcode-3.10.2",
   "version": "3.10.2",
   "appSpec": "patch-spec.json",
-  "appSpecSha256": "1c2cea6f6acc55e3eeba36bea6274e9b9270ca87328c9e08e3baaddcc50efe5c",
+  "appSpecSha256": "3d9e0ef7393867d09cda5c5e20131b798f7461498500ec0788ec6ef38aa02fb2",
   "glmSpec": "glm-spec.json",
   "glmSpecSha256": "d381104957293826476bbdf3ab18d1a143e4cf8ec9c8bc744d3ecce2da597760",
   "appMarker": "OpenAiOAuthAdapter",
@@ -34,7 +34,9 @@
         "chatgpt_plan_type",
         "slug===\"gpt-6-astra-wm\"",
         "!astraOk||!astra?rm",
-        "else astraOk||"
+        "else astraOk||",
+        "\"User-Agent\":\"ZCode/3.10.2\"",
+        "for(let a=0;a<2;a++)"
       ]
     },
     {
