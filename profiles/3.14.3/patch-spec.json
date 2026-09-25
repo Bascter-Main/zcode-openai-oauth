@@ -1,0 +1,66 @@
+{
+  "out/host/index.js": [
+    {
+      "resolver": "openai.injectAndRegisterConfig"
+    },
+    {
+      "resolver": "openai.registerAdapterCase"
+    },
+    {
+      "resolver": "openai.appendKnownId"
+    },
+    {
+      "resolver": "openai.hookStartupSync"
+    },
+    {
+      "resolver": "openai.hookManualRefresh"
+    },
+    {
+      "resolver": "openai.hookLogout"
+    },
+    {
+      "resolver": "openai.logoutProvider"
+    },
+    {
+      "resolver": "openai.noActiveFlip"
+    },
+    {
+      "resolver": "openai.sanitizeActiveProvider"
+    },
+    {
+      "resolver": "openai.managedProviderGuard"
+    }
+  ],
+  "renderer.icons": [
+    {
+      "resolver": "openai.rendererIcon"
+    },
+    {
+      "resolver": "openai.callbackIdentity"
+    },
+    {
+      "resolver": "openai.removeLegacyStartPlans"
+    },
+    {
+      "resolver": "openai.settingsGroup"
+    },
+    {
+      "resolver": "openai.connectCard"
+    },
+    {
+      "resolver": "openai.disconnectHandler"
+    },
+    {
+      "resolver": "openai.fixedNavigation"
+    },
+    {
+      "resolver": "openai.modelMenuFirst"
+    },
+    {
+      "resolver": "openai.modelMenuPresentation"
+    },
+    {
+      "resolver": "openai.hideManagedFields"
+    }
+  ]
+}

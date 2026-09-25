@@ -65,7 +65,8 @@ function findInstall() {
   ].filter(Boolean).map(candidate => path.resolve(candidate));
   const installs = [...new Set(candidates)].filter(candidate =>
     fs.existsSync(path.join(candidate, 'ZCode.exe')) &&
-    fs.existsSync(path.join(candidate, 'resources', 'app.asar'))
+    (fs.existsSync(path.join(candidate, 'resources', 'app.asar')) ||
+      fs.existsSync(path.join(candidate, 'resources', 'app', 'package.json')))
   );
   if (installs.length === 1) return installs[0];
   if (installs.length > 1) {
@@ -86,6 +87,7 @@ function installPaths(install) {
     GLM: glm,
     GLM_BAK: `${glm}.bak-pristine`,
     GLM_META: `${glm}.bak-pristine.json`,
+    RUNTIME_APP: path.join(resources, 'app'),
   };
 }
 
@@ -104,6 +106,70 @@ function packageVersion(asarPath) {
     return JSON.parse(asar.extractFile(asarPath, 'package.json').toString()).version || '';
   } catch {
     return '';
+  }
+}
+
+function directoryVersion(appDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version || '';
+  } catch {
+    return '';
+  }
+}
+
+// Runtime-install layout (resources/app extracted + app.asar.pristine). Verification
+// runs fully in memory: no staging copy, no repack, nothing on disk is written.
+function probeRuntimeInstall(paths, version) {
+  const profile = loadProfile(version);
+  const registry = loadTransformsRegistry();
+  const instancesBySpan = core.buildTransformInstances(profile, registry);
+  const appDir = paths.RUNTIME_APP;
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'zcode-openai-syntax-'));
+  let anchors = 0;
+  try {
+    const check = (text, label) => {
+      const file = path.join(tempDir, `${label.replace(/[^\w.-]+/g, '_')}.mjs`);
+      fs.writeFileSync(file, text);
+      const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
+      if (result.status !== 0) {
+        throw compatibilityError(`${label}: syntax check failed\n${result.stderr}`);
+      }
+    };
+    for (const target of profile.targets) {
+      const label = `profile ${profile.id} target ${target.id}`;
+      const filePath = target.path
+        ? resolveInside(appDir, target.path, `${label} path`)
+        : findJsByMarker(resolveInside(appDir, target.resolver.directory,
+          `${label} resolver directory`), target.resolver.marker);
+      const spans = profile.appSpec[target.specKey];
+      const text = fs.readFileSync(filePath, 'utf8');
+      const result = core.applySpansText(text, spans, instancesBySpan, target.id,
+        { strict: true, label: target.id });
+      anchors += spans.length;
+      const missing = (target.postconditions || []).filter(value => !result.text.includes(value));
+      if (missing.length > 0) {
+        throw compatibilityError(`${label} is missing postconditions: ${missing.join(', ')}`);
+      }
+      const issue = core.criticalTargetSemanticIssue(target.id, result.text);
+      if (issue) throw compatibilityError(`${label}: critical semantic invariant failed: ${issue}`);
+      check(result.text, target.id);
+    }
+    const glmPath = path.join(paths.INSTALL, profile.glm.path);
+    const glmSource = fs.existsSync(`${glmPath}.rt-pristine`) ? `${glmPath}.rt-pristine` : glmPath;
+    const glmResult = core.applySpansText(fs.readFileSync(glmSource, 'utf8'), profile.glmSpec.spans,
+      instancesBySpan, 'glm', { strict: true, label: 'glm' });
+    anchors += profile.glmSpec.spans.length;
+    const glmMissing = [profile.glm.marker, ...profile.glm.postconditions]
+      .filter(value => !glmResult.text.includes(value));
+    if (glmMissing.length > 0) {
+      throw compatibilityError(`profile ${profile.id} GLM is missing postconditions: ${glmMissing.join(', ')}`);
+    }
+    check(glmResult.text, 'glm');
+    console.log(`ZCode ${version}: verified profile ${profile.id}`);
+    console.log(`compatibility probe passed: ${anchors}/${anchors} anchors, syntax, and postconditions ` +
+      '(runtime layout, live files were untouched).');
+  } finally {
+    fs.rmSync(tempDir, { recursive: true, force: true });
   }
 }
 
@@ -141,9 +207,12 @@ function validateSpans(spans, label) {
   }
   for (let index = 0; index < spans.length; index++) {
     const span = spans[index];
-    if (!span || typeof span.find !== 'string' || span.find.length === 0 ||
-        typeof span.replace !== 'string' || span.replace.length === 0) {
-      throw compatibilityError(`${label} span ${index + 1} must have non-empty find and replace strings`);
+    const isResolver = span && typeof span.resolver === 'string' && span.resolver.length > 0;
+    const isAnchor = span && typeof span.find === 'string' && span.find.length > 0 &&
+      typeof span.replace === 'string' && span.replace.length > 0;
+    if (!isResolver && !isAnchor) {
+      throw compatibilityError(
+        `${label} span ${index + 1} must have non-empty find/replace strings or a resolver name`);
     }
   }
 }
@@ -1029,6 +1098,7 @@ function selfTest() {
 
   for (const candidate of profiles) {
     const target = candidate.targets.find(item => item.id === 'renderer.settings');
+    if (!target) continue;
     assert(criticalRendererProfileIssue(candidate.appSpec[target.specKey]) === null,
       `${candidate.version} renderer spans preserve normalized provider data flow`);
   }
@@ -1173,7 +1243,8 @@ function selfTest() {
         `[${instances.map(i => i.id).join(', ')}]`);
     }
   }
-  assert(profiles.every(candidate => candidate.transformInstances.size === 31),
+  assert(profiles.filter(candidate => (candidate.transforms || []).length > 0)
+    .every(candidate => candidate.transformInstances.size === 31),
     'all mapped spans in every profile are covered by semantic transforms');
 
   const idMapInstance = registry.transforms
@@ -1371,7 +1442,9 @@ function selfTest() {
     Object.keys(astraModel.reasoning.levels).join(',') === 'low,medium,high,xhigh,max' &&
     !astraModel.reasoning.levels.ultra,
     'Astra baseline uses verified context and Responses reasoning efforts');
-  for (const candidate of profiles) {
+  const anchorHostProfiles = profiles.filter(candidate =>
+    (candidate.appSpec['out/host/index.js'] || []).some(span => typeof span.find === 'string'));
+  for (const candidate of anchorHostProfiles) {
     const astraGate = candidate.appSpec['out/host/index.js'].find(span =>
       span.replace.includes('async hasOpenAiAstraAccess'));
     assert(astraGate &&
@@ -1613,7 +1686,7 @@ function selfTest() {
       iconOverride3112.replace.includes('maskImage:`url("${n}")`'),
       'OpenAI icon follows the current theme color (3.11.2)');
 
-    for (const candidate of profiles) {
+    for (const candidate of anchorHostProfiles) {
       const hostSpec = candidate.appSpec['out/host/index.js'];
       const enableBranch = hostSpec.find(span =>
         span.replace.includes('openaiCodingPlan&&b?{...v,apiKey:b,enabled:!0,systemDisabledReason:void 0,'));
@@ -1713,6 +1786,354 @@ function selfTest() {
     { find: 'b', replace: 'c' },
   ], 'fixture') === 'c', 'spans are validated sequentially');
 
+  // Source-semantic resolver engine: anchors located via keepNames + string literals,
+  // so a 3.14.x-style profile survives minifier renaming that literal anchors cannot.
+  const resolverFixture = [
+    'function NI(e=process.env){return{providers:[TH(e),xH(e)]}}i(NI,"createOAuthRuntimeConfig");',
+    'function i7(){return rt()}i(i7,"getCredentialsDir");',
+    'function OI(e,t={}){let n=[],r=t.apiClient;for(let o of e.providers)switch(o.id){case Ne:n.push(new _y(o,r));break;case"zai":n.push(new Ay(o,r));break;default:break}return n}i(OI,"createOAuthProviderAdapters");',
+    'function Rue(e=[]){let t=new Set(Iue)}var Iue=[Ne,"zai"];i(Rue,"collectKnownOAuthProviderIds");',
+    'function mp(e,t={}){return new BI(e,{...t,adapters:OI(NI(t.env),{apiClient:t.apiClient})})}i(mp,"createOAuthService");',
+    'var Hi=class{async clearProvider(t){await this.credentialService.delete(DI(t)),await this.credentialService.delete(My(t)),await this.credentialService.delete(xy(t)),xue(t)&&await this.credentialService.delete(Ty)}static{i(this,"OAuthCredentialRepo")}};',
+    'class Svc{async savePersonalProviderOverlay(t,n,r,o){xk("providerId",t);return this.repo.update(()=>({}))}}',
+    'var Fc=class{#e;#t;async refresh(t){return this.#t?.refreshSources?await this.#t.refreshSources(`settings:${t}`):await this.#e.refresh(t),this.getView()}};',
+    'class OAuthSvc{async logout(t){if(!t){await this.logoutActiveSession();return}let n=await this.runSessionMutation(async()=>{})}}',
+  ].join('\n');
+  const resolverSpans = [
+    { resolver: 'openai.injectAndRegisterConfig' },
+    { resolver: 'openai.registerAdapterCase' },
+    { resolver: 'openai.appendKnownId' },
+    { resolver: 'openai.hookStartupSync' },
+    { resolver: 'openai.hookManualRefresh' },
+    { resolver: 'openai.hookLogout' },
+    { resolver: 'openai.logoutProvider' },
+    { resolver: 'openai.managedProviderGuard' },
+  ];
+  const resolvedFixture = core.applySpansText(resolverFixture, resolverSpans, null, 'host.main',
+    { strict: true, label: 'resolver-fixture' });
+  assert(resolvedFixture.failures.length === 0, 'resolvers apply to a renamed 3.14.x host shape');
+  assert(resolvedFixture.text.includes('class ZcodeOpenAiOAuthAdapter') &&
+    /providers:\[TH\(e\),xH\(e\),zcodeOaiProviderConfig\(e\)\]/.test(resolvedFixture.text) &&
+    resolvedFixture.text.includes('case"openai":n.push(new ZcodeOpenAiOAuthAdapter(o,r))') &&
+    resolvedFixture.text.includes('Iue=[Ne,"zai","openai"]') &&
+    resolvedFixture.text.includes('zcodeOaiStartupSync(t.apiClient)') &&
+    resolvedFixture.text.includes('zcodeOaiApiClient=t.apiClient') &&
+    resolvedFixture.text.includes('"settings-manual"&&await zcodeOaiManualSync()') &&
+    resolvedFixture.text.includes('if(t==="openai")zcodeOaiRemoveProvider()') &&
+    resolvedFixture.text.includes('await this.repo.clearProvider("openai")') &&
+    resolvedFixture.text.includes('OpenAI provider endpoint is managed'),
+    'OpenAI OAuth, managed-provider sync, and host field guards are injected by resolvers');
+  assert(resolvedFixture.text.includes('context_window:544000') &&
+    resolvedFixture.text.includes('prevCw.set(r.modelId,cw)') &&
+    resolvedFixture.text.includes('managedModelIds') &&
+    resolvedFixture.text.includes('explicitManualIds') &&
+    resolvedFixture.text.includes('userIds=currentIds.filter'),
+    'Astra context overrides and user-added OpenAI models survive managed catalog refreshes');
+
+  const applyConfigStart = resolvedFixture.text.indexOf('function zcodeOaiApplyToConfig(');
+  const applyConfigEnd = resolvedFixture.text.indexOf('\nasync function zcodeOaiSyncNow(', applyConfigStart);
+  assert(applyConfigStart >= 0 && applyConfigEnd > applyConfigStart,
+    'managed OpenAI config merge can be isolated for behavior tests');
+  let managedConfigDoc = {
+    config: {
+      providerConfigRules: {
+        providerRules: [{
+          providerId: 'zcode-openai-codex',
+          providerName: 'OpenAI',
+          enabled: false,
+          config: {
+            group: 'standard-personal',
+            personalModelIds: ['catalog-old', 'manual-smart', 'manual-explicit', 'gpt-6-astra'],
+            modelOrder: ['manual-smart', 'catalog-old', 'gpt-6-astra', 'manual-explicit'],
+          },
+        }],
+      },
+      modelConfigRules: {
+        providerModelRules: [
+          { providerId: 'zcode-openai-codex', modelId: 'catalog-old', config: { properties: { contextWindow: 123 } } },
+          { providerId: 'zcode-openai-codex', modelId: 'manual-smart', config: { properties: { contextWindow: 333 } } },
+          { providerId: 'zcode-openai-codex', modelId: 'gpt-6-astra', config: { properties: { contextWindow: 544 } } },
+          { providerId: 'other', modelId: 'other-model', config: { keep: true } },
+        ],
+        manualProviderModelRules: [
+          { providerId: 'zcode-openai-codex', modelId: 'manual-explicit', config: { properties: { contextWindow: 444 } } },
+          { providerId: 'other', modelId: 'other-manual', config: { keep: true } },
+        ],
+      },
+    },
+  };
+  const applyManagedConfig = Function(
+    'zcodeOaiReadJsonFile', 'zcodeOaiWriteJsonFile', 'zcodeOaiProviderId',
+    `${resolvedFixture.text.slice(applyConfigStart, applyConfigEnd)};return zcodeOaiApplyToConfig`
+  )(
+    () => managedConfigDoc,
+    (_file, next) => { managedConfigDoc = next; return true; },
+    'zcode-openai-codex'
+  );
+  const catalogModel = (id, contextWindow) => ({
+    id,
+    config: { properties: { contextWindow } },
+  });
+  const firstManagedIds = applyManagedConfig('provider_config.json', 'token', 'account', [
+    catalogModel('catalog-new', 200),
+    catalogModel('catalog-old', 150),
+    catalogModel('manual-explicit', 999),
+  ], ['catalog-old', 'gpt-6-astra'], { 'catalog-old': 100, 'gpt-6-astra': 544 });
+  let managedRule = managedConfigDoc.config.providerConfigRules.providerRules.find(
+    rule => rule.providerId === 'zcode-openai-codex');
+  let managedSmartRules = managedConfigDoc.config.modelConfigRules.providerModelRules.filter(
+    rule => rule.providerId === 'zcode-openai-codex');
+  assert(JSON.stringify(firstManagedIds.managedModelIds) === '["catalog-new","catalog-old"]' &&
+    JSON.stringify(managedRule.config.personalModelIds) ===
+      '["catalog-new","catalog-old","manual-smart","manual-explicit"]' &&
+    JSON.stringify(managedRule.config.modelOrder) ===
+      '["manual-smart","catalog-old","manual-explicit","catalog-new"]' &&
+    managedRule.enabled === false &&
+    managedSmartRules.some(rule => rule.modelId === 'manual-smart' &&
+      rule.config.properties.contextWindow === 333) &&
+    managedSmartRules.some(rule => rule.modelId === 'catalog-old' &&
+      rule.config.properties.contextWindow === 123) &&
+    !managedSmartRules.some(rule => rule.modelId === 'gpt-6-astra') &&
+    managedConfigDoc.config.modelConfigRules.manualProviderModelRules.some(
+      rule => rule.modelId === 'manual-explicit' && rule.config.properties.contextWindow === 444),
+    'catalog refresh preserves manual models/rules and removes an ineligible managed Astra');
+
+  const secondManagedIds = applyManagedConfig('provider_config.json', 'token-2', 'account', [
+    catalogModel('catalog-new', 250),
+  ], firstManagedIds.managedModelIds, firstManagedIds.managedContextWindows);
+  managedRule = managedConfigDoc.config.providerConfigRules.providerRules.find(
+    rule => rule.providerId === 'zcode-openai-codex');
+  managedSmartRules = managedConfigDoc.config.modelConfigRules.providerModelRules.filter(
+    rule => rule.providerId === 'zcode-openai-codex');
+  assert(JSON.stringify(secondManagedIds.managedModelIds) === '["catalog-new"]' &&
+    JSON.stringify(managedRule.config.personalModelIds) ===
+      '["catalog-new","manual-smart","manual-explicit"]' &&
+    JSON.stringify(managedRule.config.modelOrder) ===
+      '["manual-smart","manual-explicit","catalog-new"]' &&
+    managedSmartRules.some(rule => rule.modelId === 'manual-smart') &&
+    managedSmartRules.some(rule => rule.modelId === 'catalog-new' &&
+      rule.config.properties.contextWindow === 250) &&
+    !managedSmartRules.some(rule => rule.modelId === 'catalog-old') &&
+    managedConfigDoc.config.modelConfigRules.providerModelRules.some(
+      rule => rule.providerId === 'other' && rule.modelId === 'other-model') &&
+    managedConfigDoc.config.modelConfigRules.manualProviderModelRules.some(
+      rule => rule.providerId === 'other' && rule.modelId === 'other-manual'),
+    'a second catalog refresh replaces only managed models and keeps user order plus unrelated rules');
+
+  assert(resolvedFixture.text.includes('x&&typeof x.effort==="string"?x.effort:""') &&
+    resolvedFixture.text.includes('logo:{type:"builtin",key:"openai"}') &&
+    resolvedFixture.text.includes('max_context_window') &&
+    resolvedFixture.text.includes('ok.includes(x)') &&
+    resolvedFixture.text.includes('zcodeOaiReasoningSpec(m.supported_reasoning_levels)||{values:["medium"],map:"{}"}'),
+    'catalog effort objects, builtin OpenAI logo, max_context_window, and API-accepted efforts are handled');
+  let resolverFailedClosed = false;
+  try {
+    core.applySpansText('function unrelated(){}', resolverSpans, null, 'host.main',
+      { strict: true, label: 'resolver-fixture' });
+  } catch (error) {
+    resolverFailedClosed = true;
+  }
+  assert(resolverFailedClosed, 'resolvers fail closed when anchors are absent');
+
+  const iconFixture = 'const Uft={[Bmd]:Hft,zai:LS};function eU(e,t){let n=Uft[e];' +
+    'return n?(0,$.jsx)(`img`,{src:n,alt:``,"aria-hidden":`true`,' +
+    'className:Z(`shrink-0 object-contain`,t)}):(0,$.jsx)(Oc,{className:Z(`shrink-0`,t)})}' +
+    'async function Ojn(e){let t=iw(e.result.provider);' +
+    'if(e.setUser(e.result.userInfo),e.setOAuthError(null),' +
+    'await e.setProviderFamilyDomain(e.result.provider),e.refreshLatestModelProviderFamilySelection){}}' +
+    'function Menu(sel,view,labels={}){return view.providers.flatMap(p=>{' +
+    'if(!supports(sel,p.config.api?.type))return[];let parsed=parse(p.config.access),' +
+    'presentation=parsed.success?present(p.providerId,parsed.data,labels):null;' +
+    'return[{key:`registry-provider:${p.providerId}`,label:presentation?.label||' +
+    'p.providerName?.trim()||p.providerId,items:p.models.map(m=>m)}]})}' +
+    'const Nav=[{id:`preset`,title:i18n.formatMessage({id:`settings.modelProvider.presetTitle`}),' +
+    'items:[...Ps.map(e=>e),...Cp.filter(e=>isStart(e.presetId))]},' +
+    '{id:`custom`,title:i18n.formatMessage({id:`settings.modelProvider.customTitle`}),' +
+    'items:Pr.map(e=>({key:keyOf(e.providerId),type:`custom`,label:labelOf(e),' +
+    'provider:e,statusActive:e.executable===!0}))}];' +
+    'function Navigation(groups,selected,select,reorder,reorderable,sensors){return groups.map(group=>' +
+    'group.id===`preset`?(0,R.jsx)(Fixed,{group:group,selectedNodeKey:selected,onSelectNavItem:select}):' +
+    '(0,R.jsx)(Sortable,{group:group,selectedNodeKey:selected,onSelectNavItem:select,' +
+    'onReorderProviderIds:reorder,reorderableProviderIds:reorderable,sensors:sensors}))}' +
+    'function Detail({selectedNavItem:e,onCodingPlanLogin:y,onRetryCodingPlan:b,' +
+    'onCodingPlanDisconnect:x,onOpenApiKeyUrl:S,onSave:d,onDelete:g,onReorderProviderModels:_,' +
+    'onTestModel:v}){let{intl:D}=q(),k=D.formatMessage({id:`common.loading`}),I={x:1};' +
+    'if(e.type===`codingPlanLoading`)return null;if(!e.provider)return(0,$.jsx)(V5,{loadingLabel:k});' +
+    'let H=e.provider,ee=H.templateId?q1e(H):void 0;' +
+    'return(0,$.jsx)(I5,{provider:H,onSave:d,...I,onDelete:()=>g(H),' +
+    'onReorderModelIds:_?e=>_(H.providerId,e):void 0,onTestModel:v,' +
+    'presetApiKeyUrl:ee,readOnlyEndpoints:!1,nameEditable:!0,onOpenPresetApiKey:ee?()=>{S(ee)}:void 0})}' +
+    'function Dlg(){return(0,$.jsxs)(`div`,{children:(0,$.jsx)(X,{variant:`outline`,children:`Close`})})}' +
+    'function Section(d,b,te,ee,J){let Je=(0,Q.useCallback)(async(e,t,n)=>{' +
+    'if(!(t!==`bigmodel`&&t!==`zai`)){te(e),ee(e);try{' +
+    'J.info(`[ModelProviderSection] 请求解绑 Coding Plan provider`,{presetId:e});' +
+    'await d.logout(t),await Ce({clearUserWhenLoggedOut:!0}),await b(),Fe()}' +
+    'catch(r){J.error(`fail`)}finally{te(t=>t===e?null:t),ee(t=>t===e?null:t)}}},[d,b])}' +
+    'function CardBody(P){let HeaderName=displayName,Other=0,Account=' +
+    'P.config.access?.type===`zhipu-account`,ApiKey=isApiKey(P.config.access);' +
+    'return(0,R.jsxs)(`div`,{className:`space-y-3`,children:[' +
+    '(0,R.jsx)(Header,{providerToggle:(0,R.jsx)(Switch,{"data-testid":`model-provider-enabled-switch`})}),' +
+    '(0,R.jsxs)(`div`,{className:`space-y-3`,children:[Account?null:' +
+    '(0,R.jsx)(Connection,{provider:P}),ApiKey?(0,R.jsx)(KeySection,{}):null,' +
+    '(0,R.jsx)(Models,{providerId:P.providerId,onAddModel:add,onReorderModelIds:reorder})]})]})}';
+  const iconSpans = [
+    { resolver: 'openai.rendererIcon' },
+    { resolver: 'openai.callbackIdentity' },
+    { resolver: 'openai.removeLegacyStartPlans' },
+    { resolver: 'openai.settingsGroup' },
+    { resolver: 'openai.connectCard' },
+    { resolver: 'openai.disconnectHandler' },
+    { resolver: 'openai.fixedNavigation' },
+    { resolver: 'openai.modelMenuFirst' },
+    { resolver: 'openai.modelMenuPresentation' },
+    { resolver: 'openai.hideManagedFields' },
+  ];
+  const iconResult = core.applySpansText(iconFixture, iconSpans, null, 'renderer.icons',
+    { strict: true, label: 'icon-fixture' });
+  assert(iconResult.failures.length === 0 &&
+    iconResult.text.startsWith('const Uft={[Bmd]:Hft,zai:LS,openai:"data:image/svg+xml,') &&
+    iconResult.text.includes('backgroundColor:`currentColor`') &&
+    iconResult.text.includes('WebkitMaskImage:`url("${n}")`') &&
+    iconResult.text.includes('if(e.result.provider!=="openai"&&e.setUser(') &&
+    !iconResult.text.includes('...Cp.filter(e=>isStart(e.presetId))') &&
+    iconResult.text.includes('id:`preset`,title:') &&
+    iconResult.text.includes('id:`openai`,title:`OpenAI`') &&
+    iconResult.text.indexOf('id:`preset`,title:') < iconResult.text.indexOf('id:`openai`,title:`OpenAI`') &&
+    iconResult.text.indexOf('id:`openai`,title:`OpenAI`') < iconResult.text.indexOf('id:`custom`,title:') &&
+    iconResult.text.includes('Pr.filter(e=>e.providerId==="zcode-openai-codex").map(') &&
+    iconResult.text.includes('e.providerId!=="zcode-openai-codex"') &&
+    iconResult.text.includes('group.id===`preset`||group.id===`openai`') &&
+    iconResult.text.includes('const zcodeOaiMenuProviders=[') &&
+    iconResult.text.includes('key:p.providerId==="zcode-openai-codex"?`family:openai`') &&
+    iconResult.text.includes('e.key===`custom:zcode-openai-codex`') &&
+    iconResult.text.includes('`断开连接`:`连接 OpenAI`') &&
+    iconResult.text.includes('provider:null,statusActive:!1') &&
+    iconResult.text.includes('presetApiKeyUrl:void 0,readOnlyEndpoints:!0,nameEditable:!1') &&
+    iconResult.text.includes('[ModelProviderSection] 断开 OpenAI 连接失败') &&
+    iconResult.text.includes('(Account||P.providerId==="zcode-openai-codex")?null:') &&
+    iconResult.text.includes('ApiKey&&P.providerId!=="zcode-openai-codex"?') &&
+    iconResult.text.includes('providerId:P.providerId,onAddModel:add,onReorderModelIds:reorder') &&
+    core.criticalTargetSemanticIssue('renderer.icons', iconResult.text) === null,
+    'OpenAI renderer resolvers preserve the independent settings group, hidden credentials, and family model menu');
+  assert(core.criticalTargetSemanticIssue('renderer.icons', iconFixture) !== null,
+    'renderer invariant fails on a pristine bundle');
+  const staleStartPlanResult = core.applySpansText(iconFixture,
+    iconSpans.filter(span => span.resolver !== 'openai.removeLegacyStartPlans'),
+    null, 'renderer.icons', { strict: true, label: 'icon-fixture' });
+  assert(core.criticalTargetSemanticIssue('renderer.icons', staleStartPlanResult.text) !== null,
+    'renderer invariant rejects a patched bundle that still appends legacy Start Plan rows');
+  for (const resolver of [
+    'openai.rendererIcon',
+    'openai.removeLegacyStartPlans',
+    'openai.settingsGroup',
+    'openai.connectCard',
+    'openai.disconnectHandler',
+    'openai.fixedNavigation',
+    'openai.modelMenuFirst',
+    'openai.modelMenuPresentation',
+    'openai.hideManagedFields',
+  ]) {
+    let failedClosed = false;
+    try {
+      core.applySpansText('function q(){}', [{ resolver }], null, 'renderer.icons',
+        { strict: true, label: 'icon-fixture' });
+    } catch (error) {
+      failedClosed = true;
+    }
+    assert(failedClosed, `${resolver} fails closed when its anchor is absent`);
+  }
+
+  const glmArgsFixture = 'return{webSearchToolName:Ab,args:{...Cd,tools:Ef,tool_choice:Gh},' +
+    'warnings:[...Ij,...Kl],store:Mn,toolNameMapping:Op}';
+  const glmArgsSpans = [{ resolver: 'openai.codexArgsWhitelist' }];
+  const glmArgsResult = core.applySpansText(glmArgsFixture, glmArgsSpans, null, 'glm',
+    { strict: true, label: 'glm-args-fixture' });
+  assert(glmArgsResult.failures.length === 0 &&
+    glmArgsResult.text.includes('args:String(this.config.url({path:""})).includes("chatgpt.com")?') &&
+    glmArgsResult.text.includes('["model","instructions","input","tools","store","stream","include","reasoning"]') &&
+    glmArgsResult.text.includes(':{...Cd,tools:Ef,tool_choice:Gh}'),
+    'Codex args whitelist renames safely and preserves the non-codex branch byte-identically');
+  let glmArgsFailedClosed = false;
+  try {
+    core.applySpansText('function q(){}', glmArgsSpans, null, 'glm',
+      { strict: true, label: 'glm-args-fixture' });
+  } catch (error) {
+    glmArgsFailedClosed = true;
+  }
+  assert(glmArgsFailedClosed, 'codex args resolver fails closed when anchors are absent');
+
+  const glmErrorFixture = 'San=zz.object({error:zz.object({message:zz.string(),' +
+    'type:zz.string().nullish(),param:zz.any().nullish(),' +
+    'code:zz.union([zz.string(),zz.number()]).nullish()})}),PF=Uv({errorSchema:San,' +
+    'errorToMessage:r(e=>e.error.message,"errorToMessage")});';
+  const glmErrorSpans = [{ resolver: 'openai.codexErrorSchema' }];
+  const glmErrorResult = core.applySpansText(glmErrorFixture, glmErrorSpans, null, 'glm',
+    { strict: true, label: 'glm-error-fixture' });
+  assert(glmErrorResult.failures.length === 0 &&
+    glmErrorResult.text.includes('}).nullish(),detail:zz.string().nullish()}),PF=Uv({errorSchema:San,') &&
+    glmErrorResult.text.includes('e=>e.error?.message??e.detail??"Bad Request"'),
+    'Codex error schema resolver loosens the schema and reads detail');
+  let glmErrorFailedClosed = false;
+  try {
+    core.applySpansText('function q(){}', glmErrorSpans, null, 'glm',
+      { strict: true, label: 'glm-error-fixture' });
+  } catch (error) {
+    glmErrorFailedClosed = true;
+  }
+  assert(glmErrorFailedClosed, 'codex error resolver fails closed when anchors are absent');
+
+  const callbackFixture = 'async function Ojn(e){let t=iw(e.result.provider);' +
+    'if(e.setUser(e.result.userInfo),e.setOAuthError(null),' +
+    'await e.setProviderFamilyDomain(e.result.provider),e.refreshLatestModelProviderFamilySelection){}}';
+  const callbackSpans = [{ resolver: 'openai.callbackIdentity' }];
+  const callbackResult = core.applySpansText(callbackFixture, callbackSpans, null, 'renderer.icons',
+    { strict: true, label: 'callback-fixture' });
+  assert(callbackResult.failures.length === 0 &&
+    callbackResult.text.includes('if(e.result.provider!=="openai"&&e.setUser(e.result.userInfo),') &&
+    callbackResult.text.includes('e.result.provider!=="openai"&&await e.setProviderFamilyDomain(e.result.provider),') &&
+    callbackResult.text.includes('e.refreshLatestModelProviderFamilySelection)'),
+    'OAuth callback identity resolver guards setUser and the family domain for openai');
+  let callbackFailedClosed = false;
+  try {
+    core.applySpansText('function q(){}', callbackSpans, null, 'renderer.icons',
+      { strict: true, label: 'callback-fixture' });
+  } catch (error) {
+    callbackFailedClosed = true;
+  }
+  assert(callbackFailedClosed, 'callback identity resolver fails closed when anchors are absent');
+
+  const identityFixture = [
+    'var fp="oauth:active_provider";var DI=e=>"oauth:"+e+":access_token";',
+    'class Repo{async getActiveProvider(){return this.loadActiveProvider()}',
+    'async setActiveProvider(t){await this.saveActiveProvider(t)}',
+    'async loadActiveProvider(){try{return await this.credentialService.load(fp)}' +
+    'catch(t){if(!sc(t))throw t;return await this.clearCorruptOAuthSession(),null}}',
+    'async loadTokenSet(t){try{let n=await this.credentialService.load(DI(t));return n}catch(n){throw n}}',
+    'async persistOAuthSession(t,n,r,o){await this.repo.saveUserProfile(t,Ra(t,r)),await f(),' +
+    'await this.repo.setActiveProvider(t),o&&!o())throw 0}',
+  ].join('\n');
+  const identitySpans = [
+    { resolver: 'openai.noActiveFlip' },
+    { resolver: 'openai.sanitizeActiveProvider' },
+  ];
+  const identityResult = core.applySpansText(identityFixture, identitySpans, null, 'host.main',
+    { strict: true, label: 'identity-fixture' });
+  assert(identityResult.failures.length === 0 &&
+    identityResult.text.includes('t!=="openai"&&await this.repo.setActiveProvider(t),') &&
+    identityResult.text.includes('if(zcodeOaiActive!=="openai")return zcodeOaiActive;') &&
+    identityResult.text.includes('this.credentialService.load(DI(zcodeOaiFamily))'),
+    'OpenAI login stays off the active account and a stored openai active value self-heals');
+  for (const resolver of ['openai.noActiveFlip', 'openai.sanitizeActiveProvider']) {
+    let failedClosed = false;
+    try {
+      core.applySpansText('function q(){}', [{ resolver }], null, 'host.main',
+        { strict: true, label: 'identity-fixture' });
+    } catch (error) {
+      failedClosed = true;
+    }
+    assert(failedClosed, `${resolver} fails closed when anchors are absent`);
+  }
+
     console.log('[OK] self-test: dynamic catalog, context repair, reasoning, cleanup, and backups');
   });
 }
@@ -1727,7 +2148,14 @@ async function main() {
   const install = REQUESTED_INSTALL || findInstall();
   let paths = installPaths(install);
   console.log('ZCode install:', install);
-  if (!fs.existsSync(paths.ASAR)) throw new Error(`app.asar not found at ${paths.ASAR}`);
+  if (!fs.existsSync(paths.ASAR)) {
+    const runtimeVersion = directoryVersion(paths.RUNTIME_APP);
+    if (!runtimeVersion) throw new Error(`app.asar not found at ${paths.ASAR}`);
+    console.log('runtime install layout detected (resources/app)');
+    if (PROBE) return probeRuntimeInstall(paths, runtimeVersion);
+    throw new Error('this install uses the runtime patcher; run ' +
+      'node runtime/install-runtime.js --dir <path> to reinstall or update the patch');
+  }
 
   const version = packageVersion(paths.ASAR);
   if (!version) throw new Error('could not read the installed ZCode package version');

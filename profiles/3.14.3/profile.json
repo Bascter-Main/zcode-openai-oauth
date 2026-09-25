@@ -1,0 +1,71 @@
+{
+  "schemaVersion": 1,
+  "id": "zcode-3.14.3",
+  "version": "3.14.3",
+  "appSpec": "patch-spec.json",
+  "appSpecSha256": "354534035c34b339c3172ff5bad03c97a99592e072fbe2f938d05bb6ee1844d0",
+  "glmSpec": "glm-spec.json",
+  "glmSpecSha256": "98f8c84ceeb46ba864aeaae42a08db4bb37c5279eb83722975e4519664b2533e",
+  "appMarker": "ZcodeOpenAiOAuthAdapter",
+  "transforms": [],
+  "targets": [
+    {
+      "id": "host.main",
+      "specKey": "out/host/index.js",
+      "path": "out/host/index.js",
+      "postconditions": [
+        "ZcodeOpenAiOAuthAdapter",
+        "zcodeOaiProviderConfig",
+        "case\"openai\"",
+        "zcodeOaiSyncNow",
+        "zcodeOaiStartupSync",
+        "zcodeOaiManualSync",
+        "await this.repo.clearProvider(\"openai\")",
+        "zcodeOaiRemoveProvider",
+        "!==\"openai\"&&await this.repo.setActiveProvider",
+        "zcodeOaiActive!==\"openai\"",
+        "managedModelIds",
+        "OpenAI provider endpoint is managed"
+      ]
+    },
+    {
+      "id": "renderer.icons",
+      "specKey": "renderer.icons",
+      "resolver": {
+        "type": "marker-js",
+        "directory": "out/renderer/assets",
+        "marker": "shrink-0 object-contain"
+      },
+      "postconditions": [
+        "openai:\"data:image/svg+xml,",
+        "backgroundColor:`currentColor`",
+        "WebkitMaskImage:`url(\"",
+        ".result.provider!==\"openai\"&&",
+        "id:`openai`,title:`OpenAI`",
+        "providerId===\"zcode-openai-codex\").map",
+        "providerId!==\"zcode-openai-codex\"",
+        ".id===`preset`||",
+        ".id===`openai`",
+        "const zcodeOaiMenuProviders=[",
+        "?`family:openai`:`registry-provider:",
+        "key===`custom:zcode-openai-codex`",
+        "`断开连接`:`连接 OpenAI`",
+        "provider:null,statusActive:!1",
+        "断开 OpenAI 连接失败",
+        ".providerId===\"zcode-openai-codex\")?null:",
+        ".providerId!==\"zcode-openai-codex\"?"
+      ]
+    }
+  ],
+  "glm": {
+    "path": "resources/glm/zcode.cjs",
+    "marker": "includes(\"chatgpt.com\")?!1:",
+    "postconditions": [
+      "includes(\"chatgpt.com\")?!1:",
+      "Object.fromEntries(Object.entries({...",
+      "error?.message??",
+      "timeoutMs:12e4,maxOutputBytes:1e5",
+      "defaultMs:12e4,maxMs:12e4"
+    ]
+  }
+}
