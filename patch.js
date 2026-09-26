@@ -1818,7 +1818,13 @@ function selfTest() {
     resolvedFixture.text.includes('Iue=[Ne,"zai","openai"]') &&
     resolvedFixture.text.includes('zcodeOaiStartupSync(t.apiClient)') &&
     resolvedFixture.text.includes('zcodeOaiApiClient=t.apiClient') &&
-    resolvedFixture.text.includes('"settings-manual"&&await zcodeOaiManualSync()') &&
+    resolvedFixture.text.includes('zcodeOaiManualOk=await zcodeOaiManualSync()') &&
+    resolvedFixture.text.includes('OpenAI catalog refresh failed: ') &&
+    resolvedFixture.text.includes('registry.npmjs.org/@openai/codex/latest') &&
+    resolvedFixture.text.includes('zcodeOaiFallbackClientVersion="0.156.1"') &&
+    resolvedFixture.text.includes('now-sidecar.clientVersionCheckedAt>=0') &&
+    resolvedFixture.text.includes('if(!zcodeOaiExistsSync(zcodeOaiJoin(dir,zcodeOaiSidecarName)))return Promise.resolve(true)') &&
+    resolvedFixture.text.includes('clientVersionCheckedAt') &&
     resolvedFixture.text.includes('if(t==="openai")zcodeOaiRemoveProvider()') &&
     resolvedFixture.text.includes('await this.repo.clearProvider("openai")') &&
     resolvedFixture.text.includes('OpenAI provider endpoint is managed'),
@@ -1829,6 +1835,22 @@ function selfTest() {
     resolvedFixture.text.includes('explicitManualIds') &&
     resolvedFixture.text.includes('userIds=currentIds.filter'),
     'Astra context overrides and user-added OpenAI models survive managed catalog refreshes');
+
+  const catalogStart = resolvedFixture.text.indexOf('function zcodeOaiCatalogModels(');
+  const catalogEnd = resolvedFixture.text.indexOf('\nasync function zcodeOaiAstraAllowed(', catalogStart);
+  assert(catalogStart >= 0 && catalogEnd > catalogStart,
+    'OpenAI catalog filter can be isolated for behavior tests');
+  const filterCatalogModels = Function(
+    `${resolvedFixture.text.slice(catalogStart, catalogEnd)};return zcodeOaiCatalogModels`
+  )();
+  assert(JSON.stringify(filterCatalogModels({ models: [
+    { slug: 'gpt-6-sol', supported_in_api: true, visibility: 'list' },
+    { slug: 'gpt-6-astra', supported_in_api: true, visibility: 'list' },
+    { slug: 'gpt-6-luna', supported_in_api: true, visibility: 'list' },
+    { slug: 'gpt-6-hidden', supported_in_api: true, visibility: 'hide' },
+    { slug: 'gpt-6-disabled', supported_in_api: false, visibility: 'list' },
+  ] }).map(model => model.slug)) === '["gpt-6-sol","gpt-6-astra","gpt-6-luna"]',
+  'all visible API-supported GPT-6 catalog variants pass through without a name allowlist');
 
   const applyConfigStart = resolvedFixture.text.indexOf('function zcodeOaiApplyToConfig(');
   const applyConfigEnd = resolvedFixture.text.indexOf('\nasync function zcodeOaiSyncNow(', applyConfigStart);
