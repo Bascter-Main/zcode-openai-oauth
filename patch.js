@@ -844,6 +844,23 @@ function analyzeSpans(text, spans, instancesBySpan, targetKey) {
   const failures = [];
   const levels = [];
   for (let index = 0; index < spans.length; index++) {
+    if (spans[index] && spans[index].resolver) {
+      try {
+        const applied = core.applySpansText(result, [spans[index]], null, targetKey,
+          { strict: true, label: `probe ${targetKey}#${index + 1}` });
+        if (applied.failures.length === 0 && applied.text !== result) {
+          matched += 1;
+          result = applied.text;
+          levels.push({ span: index + 1, level: 'resolver', ids: [spans[index].resolver] });
+          continue;
+        }
+      } catch (error) {
+        // fall through to the failed level below
+      }
+      failures.push({ anchor: index + 1, count: 0 });
+      levels.push({ span: index + 1, level: 'failed', ids: [spans[index].resolver] });
+      continue;
+    }
     const instances = instancesBySpan.get(`${targetKey}:${index}`);
     if (instances) {
       const ids = instances.map(instance => instance.id);
@@ -954,7 +971,7 @@ function printProbeReport(version, reports) {
   console.log(`ZCode version: ${version}`);
   for (const report of reports) {
     console.log(`\n${report.profileId}: ${report.matched}/${report.total} anchors compatible`);
-    const levelCounts = { semantic: 0, anchor: 0, 'anchor-fallback': 0, failed: 0 };
+    const levelCounts = { semantic: 0, anchor: 0, 'anchor-fallback': 0, resolver: 0, failed: 0 };
     const failedTransforms = [];
     for (const level of [...report.targets.flatMap(t => t.levels), ...report.glm.levels]) {
       levelCounts[level.level] += 1;
@@ -966,6 +983,9 @@ function printProbeReport(version, reports) {
       console.log(`  transform resolution: ${levelCounts.semantic} semantic, ` +
         `${levelCounts['anchor-fallback']} anchor-fallback, ${levelCounts.anchor} anchor-only, ` +
         `${levelCounts.failed} failed`);
+    }
+    if (levelCounts.resolver > 0) {
+      console.log(`  resolver spans: ${levelCounts.resolver} located, ${levelCounts.failed} failed`);
     }
     for (const id of [...new Set(failedTransforms)]) {
       console.log(`  transform failed: ${id}`);
@@ -1057,6 +1077,11 @@ function selfTest() {
     'verified 3.10.2 profile and all app targets load');
   assert(profiles.some(candidate => candidate.version === '3.11.2'),
     'verified 3.11.2 profile and checksums load');
+  const resolverProfiles = profiles.filter(candidate => candidate.version.startsWith('3.14.'));
+  assert(resolverProfiles.length >= 2 &&
+    resolverProfiles.every(candidate => candidate.id === `zcode-${candidate.version}` &&
+      candidate.targets.length === Object.keys(candidate.appSpec).length),
+    'verified 3.14.x resolver profiles load with matching identity');
 
   let unknownProfileError;
   try {
@@ -1956,6 +1981,19 @@ function selfTest() {
     resolverFailedClosed = true;
   }
   assert(resolverFailedClosed, 'resolvers fail closed when anchors are absent');
+
+  const resolverAnalysis = analyzeSpans(resolverFixture, resolverSpans, new Map(), 'host.main');
+  assert(resolverAnalysis.matched === resolverSpans.length &&
+    resolverAnalysis.failures.length === 0 &&
+    resolverAnalysis.levels.every(level => level.level === 'resolver') &&
+    resolverAnalysis.result.includes('zcodeOaiManualSync'),
+    'probe analysis evaluates resolver spans against the real host shape');
+  const resolverMiss = analyzeSpans('function unrelated(){}',
+    [{ resolver: 'openai.hookManualRefresh' }], new Map(), 'host.main');
+  assert(resolverMiss.matched === 0 && resolverMiss.failures.length === 1 &&
+    resolverMiss.levels[0].level === 'failed' &&
+    resolverMiss.levels[0].ids[0] === 'openai.hookManualRefresh',
+    'probe analysis reports resolver spans that do not locate instead of counting them as zero anchors');
 
   const iconFixture = 'const Uft={[Bmd]:Hft,zai:LS};function eU(e,t){let n=Uft[e];' +
     'return n?(0,$.jsx)(`img`,{src:n,alt:``,"aria-hidden":`true`,' +

@@ -4,7 +4,7 @@
 
 给 [ZCode](https://zcode.z.ai) 桌面版（Windows）内置一个 **OpenAI 模型供应商**：通过 ChatGPT 订阅 OAuth 登录，直接在聊天里使用账号当前获准使用的 GPT 系列模型，并保持原有 Z.ai / BigModel 应用账号身份不变。
 
-已验证版本：ZCode **3.10.2、3.11.2、3.14.3**。补丁器按精确版本选择兼容性 profile；未知版本不会在部署模式下静默尝试。
+已验证版本：ZCode **3.10.2、3.11.2、3.14.3、3.14.5**。补丁器按精确版本选择兼容性 profile；未知版本不会在部署模式下静默尝试。
 
 ## 一键使用
 
@@ -65,6 +65,8 @@ node runtime/install-runtime.js --dir "D:\Program Files\ZCode" --restore
 ```
 
 投递明细记录在 `resources/app/out/.zcode-runtime/runtime.log`（每个目标的锚点命中数、postcondition 与关键不变量校验结果、投递内容哈希）。
+
+**官方升级后**：更新程序会放回新的 `app.asar`，而解包目录仍是旧版本。重新运行 `install-runtime.js` 时会检测到这一点：若本仓库已支持新版本，则从新的 asar 重建解包目录并重打补丁；若尚未支持，则不改动任何文件并明确提示（此时 ZCode 会继续运行旧版解包，直到新版本获得支持或手动 `--restore`）。
 
 ## 修改点位框架
 

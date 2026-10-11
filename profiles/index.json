@@ -3,6 +3,7 @@
   "profiles": {
     "3.10.2": "3.10.2/profile.json",
     "3.11.2": "3.11.2/profile.json",
-    "3.14.3": "3.14.3/profile.json"
+    "3.14.3": "3.14.3/profile.json",
+    "3.14.5": "3.14.5/profile.json"
   }
 }

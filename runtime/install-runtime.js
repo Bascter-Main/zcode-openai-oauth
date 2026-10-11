@@ -38,6 +38,7 @@ const fail = message => { console.error(`install-runtime: ${message}`); process.
 const resources = path.join(INSTALL, 'resources');
 const appDir = path.join(resources, 'app');
 const asarPath = path.join(resources, 'app.asar');
+const pristineAsar = `${asarPath}.pristine`;
 
 function targetZCodeRunning() {
   if (process.platform !== 'win32' || POC) return false;
@@ -57,13 +58,12 @@ if (targetZCodeRunning()) {
 // --restore: remove the extracted app dir, bring back the pristine asar, and
 // restore the glm CLI bundle. Run with ZCode closed.
 if (args.includes('--restore')) {
-  const pristine = `${asarPath}.pristine`;
-  if (!fs.existsSync(pristine)) fail(`no ${pristine} — runtime mode is not installed here`);
+  if (!fs.existsSync(pristineAsar)) fail(`no ${pristineAsar} — runtime mode is not installed here`);
   if (fs.existsSync(appDir)) {
     fs.rmSync(appDir, { recursive: true, force: true });
     console.log('removed resources/app');
   }
-  fs.renameSync(pristine, asarPath);
+  fs.renameSync(pristineAsar, asarPath);
   console.log('app.asar.pristine -> app.asar');
   const glmRt = path.join(resources, 'glm', 'zcode.cjs.rt-pristine');
   if (fs.existsSync(glmRt)) {
@@ -75,13 +75,43 @@ if (args.includes('--restore')) {
   process.exit(0);
 }
 
+const extractAsar = (archive, dest) => {
+  // Extract beside the target and rename, so a failed extraction never leaves
+  // a partial resources/app that a later rerun would mistake for complete.
+  const tmp = `${dest}.tmp-${process.pid}`;
+  fs.rmSync(tmp, { recursive: true, force: true });
+  try {
+    asar.extractAll(archive, tmp);
+    fs.rmSync(dest, { recursive: true, force: true });
+    fs.renameSync(tmp, dest);
+  } catch (error) {
+    fs.rmSync(tmp, { recursive: true, force: true });
+    throw error;
+  }
+};
+
+// An official update drops a new app.asar next to the previously extracted
+// resources/app. That extraction is stale at that point (and wins over the
+// asar at Electron launch), so rebuild it from the new asar — but only after
+// confirming the new version has a profile, leaving the install untouched
+// otherwise.
+if (fs.existsSync(appDir) && fs.existsSync(asarPath)) {
+  const updatedVersion = JSON.parse(asar.extractFile(asarPath, 'package.json').toString()).version;
+  if (!fs.existsSync(path.join(REPO, 'profiles', updatedVersion || '', 'profile.json'))) {
+    fail(`no verified profile for ZCode ${updatedVersion} — the official update was left untouched; rerun after this repo supports it`);
+  }
+  console.log(`official update detected: re-extracting ZCode ${updatedVersion} (stale ${JSON.parse(fs.readFileSync(path.join(appDir, 'package.json'), 'utf8')).version} extraction removed)`);
+  fs.rmSync(appDir, { recursive: true, force: true });
+  fs.rmSync(pristineAsar, { force: true });
+}
 if (!fs.existsSync(appDir)) {
   if (!fs.existsSync(asarPath)) fail(`no resources/app or resources/app.asar under ${INSTALL}`);
   console.log('extracting app.asar -> resources/app ...');
-  asar.extractAll(asarPath, appDir);
+  extractAsar(asarPath, appDir);
 }
 if (fs.existsSync(asarPath)) {
-  fs.renameSync(asarPath, `${asarPath}.pristine`);
+  fs.rmSync(pristineAsar, { force: true });
+  fs.renameSync(asarPath, pristineAsar);
   console.log('app.asar -> app.asar.pristine');
 }
 
@@ -158,6 +188,13 @@ for (const target of preloadTargets) {
 }
 const glmPath = path.join(INSTALL, profile.glm.path);
 if (!fs.existsSync(glmPath)) fail(`glm bundle not found: ${glmPath}`);
+const glmRt = `${glmPath}.rt-pristine`;
+if (fs.existsSync(glmRt) && !fs.readFileSync(glmPath, 'utf8').includes(profile.glm.marker)) {
+  // The official updater replaced the glm bundle, so the saved pristine belongs
+  // to the previous version. Rebase it on the new official file before patching.
+  fs.copyFileSync(glmPath, glmRt);
+  console.log('  refreshed glm pristine from the updated official bundle');
+}
 flatPatch(glmPath, profile.glmSpec.spans, 'glm',
   [profile.glm.marker, ...profile.glm.postconditions], 'glm');
 

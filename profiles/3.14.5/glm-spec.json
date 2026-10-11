@@ -1,0 +1,21 @@
+{
+  "spans": [
+    {
+      "resolver": "openai.codexStoreFalse"
+    },
+    {
+      "resolver": "openai.codexArgsWhitelist"
+    },
+    {
+      "resolver": "openai.codexErrorSchema"
+    },
+    {
+      "find": "capability:\"Fetch a public URL, convert readable content to markdown, and answer a prompt from it\",metadata:{name:U1,description:Rda,readOnly:!0,destructive:!1,concurrentSafe:!0,timeoutMs:6e4,maxOutputBytes:1e5",
+      "replace": "capability:\"Fetch a public URL, convert readable content to markdown, and answer a prompt from it\",metadata:{name:U1,description:Rda,readOnly:!0,destructive:!1,concurrentSafe:!0,timeoutMs:12e4,maxOutputBytes:1e5"
+    },
+    {
+      "find": "timeout:{defaultMs:6e4,maxMs:6e4,allowCallOverride:!1},cancellation:{supported:!0,cleanup:\"bestEffort\",userVisibleMessage:\"WebFetch was cancelled before the page could be processed\"}",
+      "replace": "timeout:{defaultMs:12e4,maxMs:12e4,allowCallOverride:!1},cancellation:{supported:!0,cleanup:\"bestEffort\",userVisibleMessage:\"WebFetch was cancelled before the page could be processed\"}"
+    }
+  ]
+}

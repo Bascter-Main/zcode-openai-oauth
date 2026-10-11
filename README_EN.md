@@ -4,7 +4,7 @@
 
 Adds a built-in **OpenAI model provider** to the [ZCode](https://zcode.z.ai) desktop app for Windows. Sign in with a ChatGPT subscription through OAuth and use the GPT models currently enabled for that account without changing the existing Z.ai or BigModel application identity.
 
-Verified versions: ZCode **3.10.2, 3.11.2, and 3.14.3**. The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
+Verified versions: ZCode **3.10.2, 3.11.2, 3.14.3, and 3.14.5**. The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
 
 ## Quick Start
 
@@ -65,6 +65,8 @@ node runtime/install-runtime.js --dir "D:\Program Files\ZCode" --restore
 ```
 
 Delivery details are recorded in `resources/app/out/.zcode-runtime/runtime.log` (per-target anchor hits, postcondition and critical-invariant results, delivered content hashes).
+
+**After an official upgrade:** the updater restores a new `app.asar` while the extracted directory still holds the previous version. Rerunning `install-runtime.js` detects this: when the new version is supported, it rebuilds the extraction from the new asar and reapplies the patch; when it is not, it leaves everything untouched and reports that (ZCode keeps running the previous extraction until support lands or you `--restore`).
 
 ## Transform Framework
 
