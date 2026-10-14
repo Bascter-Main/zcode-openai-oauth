@@ -4,7 +4,7 @@
 
 Adds a built-in **OpenAI model provider** to the [ZCode](https://zcode.z.ai) desktop app for Windows. Sign in with a ChatGPT subscription through OAuth and use the GPT models currently enabled for that account without changing the existing Z.ai or BigModel application identity.
 
-Verified versions: ZCode **3.10.2, 3.11.2, 3.14.3, and 3.14.5**. The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
+Verified versions: ZCode **3.10.2, 3.11.2, 3.14.3, 3.14.5, and 3.15.3**. The patcher selects an exact-version compatibility profile; unknown versions are never attempted silently in deploy mode.
 
 ## Quick Start
 
