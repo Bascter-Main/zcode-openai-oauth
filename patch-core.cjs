@@ -327,10 +327,12 @@ function criticalRendererIconsIssue(text) {
   const menuGates = [...text.matchAll(new RegExp(
     `(${id})\\.providerId!==${providerId}&&!(${id})\\([^,]+,\\1\\.config\\.api\\?\\.type\\)`, 'g'))];
   const menuPresentations = [...text.matchAll(new RegExp(
-    `key:(${id})\\.providerId===${providerId}\\?\\x60family:openai\\x60:` +
-    `\\x60registry-provider:\\$\\{\\1\\.providerId\\}\\x60,label:\\1\\.providerId===${providerId}` +
+    `key:\\x60registry-provider:\\$\\{(${id})\\.providerId\\}\\x60,label:\\1\\.providerId===${providerId}` +
     `\\?\\x60OpenAI\\x60:`, 'g'))];
-  if (menuGates.length !== 1 || menuPresentations.length !== 1 ||
+  const familyHeaders = [...text.matchAll(new RegExp(
+    `(${id})\\.key\\.startsWith\\(\\x60family:\\x60\\)\\|\\|\\1\\.items\\.some\\(` +
+    `(${id})=>\\2\\.value\\?\\.startsWith\\(\\x60custom:zcode-openai-codex:\\x60\\)\\)`, 'g'))];
+  if (menuGates.length !== 1 || menuPresentations.length !== 1 || familyHeaders.length !== 1 ||
       menuGates[0][1] !== menuPresentations[0][1]) {
     return 'OpenAI model-menu family gate and presentation are incomplete';
   }
@@ -710,19 +712,35 @@ function resolveOpenAiSanitizeActiveProvider(text) {
 // into the app account and drops the family domain to null, which makes the
 // settings navigation render every family's coding-plan rows. Skip both for openai.
 function resolveOpenAiCallbackIdentity(text) {
-  const re = new RegExp(
+  const legacyRe = new RegExp(
     `if\\((${JS_IDENT})\\.setUser\\(\\1\\.result\\.userInfo\\),\\1\\.setOAuthError\\(null\\),` +
     `await \\1\\.setProviderFamilyDomain\\(\\1\\.result\\.provider\\),`, 'g');
-  const matches = [...text.matchAll(re)];
-  if (matches.length !== 1) {
-    throw new Error(`openaiCallbackIdentity: OAuth success handler found ${matches.length} times`);
+  const guardedRe = new RegExp(
+    `(${JS_IDENT})\\.setUser\\(\\1\\.result\\.userInfo\\),\\1\\.setOAuthError\\(null\\);` +
+    `let (${JS_IDENT})=!0;try\\{await \\1\\.setProviderFamilyDomain\\(\\1\\.result\\.provider\\)\\}` +
+    `catch\\((${JS_IDENT})\\)\\{\\2=!1,`, 'g');
+  const legacyMatches = [...text.matchAll(legacyRe)];
+  const guardedMatches = [...text.matchAll(guardedRe)];
+  if (legacyMatches.length + guardedMatches.length !== 1) {
+    throw new Error(`openaiCallbackIdentity: OAuth success handler found ${legacyMatches.length + guardedMatches.length} times`);
   }
-  const [full, ctx] = matches[0];
-  const replace =
-    `if(${ctx}.result.provider!=="openai"&&${ctx}.setUser(${ctx}.result.userInfo),` +
-    `${ctx}.setOAuthError(null),` +
-    `${ctx}.result.provider!=="openai"&&await ${ctx}.setProviderFamilyDomain(${ctx}.result.provider),`;
-  return { find: full, replace };
+  if (legacyMatches.length === 1) {
+    const [full, ctx] = legacyMatches[0];
+    return {
+      find: full,
+      replace: `if(${ctx}.result.provider!=="openai"&&${ctx}.setUser(${ctx}.result.userInfo),` +
+        `${ctx}.setOAuthError(null),` +
+        `${ctx}.result.provider!=="openai"&&await ${ctx}.setProviderFamilyDomain(${ctx}.result.provider),`,
+    };
+  }
+  const [full, ctx, applied, error] = guardedMatches[0];
+  return {
+    find: full,
+    replace: `${ctx}.result.provider!=="openai"&&${ctx}.setUser(${ctx}.result.userInfo),` +
+      `${ctx}.setOAuthError(null);let ${applied}=!0;try{` +
+      `${ctx}.result.provider!=="openai"&&await ${ctx}.setProviderFamilyDomain(${ctx}.result.provider)}` +
+      `catch(${error}){${applied}=!1,`,
+  };
 }
 
 // The 3.14.x settings navigation already renders branded Z.ai and BigModel preset
@@ -806,7 +824,8 @@ function resolveOpenAiConnectCard(text) {
   }
   const [, onLogin, , onDisconnect] = loginMatches[0];
   const jsxEsc = jsx.replace(/[$^.*+?()[\]{}|\\]/g, '\\$&');
-  const buttonRe = new RegExp(`\\(0,${jsxEsc}\\.jsx\\)\\((${JS_IDENT}),\\{variant:\`outline\`,children:\`Close\`\\}\\)`, 'g');
+  const buttonRe = new RegExp(
+    `\\{asChild:!0,children:\\(0,${jsxEsc}\\.jsx\\)\\((${JS_IDENT}),\\{variant:\`outline\``, 'g');
   const buttonMatches = [...text.matchAll(buttonRe)];
   if (buttonMatches.length !== 1) {
     throw new Error(`openaiConnectCard: shared Button binding found ${buttonMatches.length} times`);
@@ -922,12 +941,11 @@ function resolveOpenAiModelMenuFirst(text) {
   return { find: full, replace };
 }
 
-// Change the generated group presentation for OpenAI without touching item values
-// or ordinary providers. The family key creates a native separator; no directItems
-// flag is added, so OpenAI remains a submenu.
+// Keep the stock registry-provider key because composer connection switching uses
+// it as an identity. Only override the managed provider's presentation label.
 function resolveOpenAiModelMenuPresentation(text) {
   const re = new RegExp(
-    `return\\[\\{key:\\x60registry-provider:\\$\\{(${JS_IDENT})\\.providerId\\}\\x60,` +
+    `return\\[\\{key:\x60registry-provider:\\$\\{(${JS_IDENT})\\.providerId\\}\\x60,` +
     `label:(${JS_IDENT})\\?\\.label\\|\\|\\1\\.providerName\\?\\.trim\\(\\)\\|\\|\\1\\.providerId,`, 'g');
   const matches = [...text.matchAll(re)];
   if (matches.length !== 1) {
@@ -936,9 +954,25 @@ function resolveOpenAiModelMenuPresentation(text) {
   const [full, provider, presentation] = matches[0];
   const managed = `${provider}.providerId==="zcode-openai-codex"`;
   const replace =
-    `return[{key:${managed}?\x60family:openai\x60:` +
-    `\x60registry-provider:\${${provider}.providerId}\x60,label:${managed}?\x60OpenAI\x60:` +
+    `return[{key:\x60registry-provider:\${${provider}.providerId}\x60,` +
+    `label:${managed}?\x60OpenAI\x60:` +
     `${presentation}?.label||${provider}.providerName?.trim()||${provider}.providerId,`;
+  return { find: full, replace };
+}
+
+// OpenAI keeps its stock registry-provider key, but should still use the native
+// family-style header/separator while remaining a submenu.
+function resolveOpenAiModelMenuFamilyPresentation(text) {
+  const re = new RegExp(
+    `function (${JS_IDENT})\\((${JS_IDENT})\\)\\{return \\2\\.key\\.startsWith\\(\\x60family:\\x60\\)\\|\\|`, 'g');
+  const matches = [...text.matchAll(re)];
+  if (matches.length !== 1) {
+    throw new Error(`openaiModelMenuFamilyPresentation: family presentation predicate found ${matches.length} times`);
+  }
+  const [full, fn, group] = matches[0];
+  const replace =
+    `function ${fn}(${group}){return ${group}.key.startsWith(\x60family:\x60)||` +
+    `${group}.items.some(zcodeOaiItem=>zcodeOaiItem.value?.startsWith(\x60custom:zcode-openai-codex:\x60))||`;
   return { find: full, replace };
 }
 
@@ -957,7 +991,7 @@ function resolveOpenAiHideManagedFields(text) {
   const provider = matches[0][2];
   const account = matches[0][1];
   const apiKey = matches[0][3];
-  const connectionFind = `${account}?null:`;
+  const connectionFind = `children:[${account}?null:`;
   const apiKeyRe = new RegExp(`${apiKey}\\?\\(0,${JS_IDENT}\\.jsx\\)\\(`, 'g');
   const apiKeyMatches = [...text.matchAll(apiKeyRe)].filter(match =>
     match.index > matches[0].index && match.index < matches[0].index + 3000);
@@ -967,7 +1001,7 @@ function resolveOpenAiHideManagedFields(text) {
   const apiKeyFind = `${apiKey}?`;
   return {
     find: `${connectionFind}${text.slice(text.indexOf(connectionFind) + connectionFind.length, apiKeyMatches[0].index)}${apiKeyFind}`,
-    replace: `(${account}||${provider}.providerId==="zcode-openai-codex")?null:` +
+    replace: `children:[(${account}||${provider}.providerId==="zcode-openai-codex")?null:` +
       `${text.slice(text.indexOf(connectionFind) + connectionFind.length, apiKeyMatches[0].index)}` +
       `${apiKey}&&${provider}.providerId!=="zcode-openai-codex"?`,
   };
@@ -1038,6 +1072,7 @@ const RESOLVERS = {
   'openai.fixedNavigation': resolveOpenAiFixedNavigation,
   'openai.modelMenuFirst': resolveOpenAiModelMenuFirst,
   'openai.modelMenuPresentation': resolveOpenAiModelMenuPresentation,
+  'openai.modelMenuFamilyPresentation': resolveOpenAiModelMenuFamilyPresentation,
   'openai.hideManagedFields': resolveOpenAiHideManagedFields,
   'openai.rendererIcon': resolveOpenAiRendererIcon,
 };

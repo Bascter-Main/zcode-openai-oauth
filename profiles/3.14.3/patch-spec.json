@@ -60,6 +60,9 @@
       "resolver": "openai.modelMenuPresentation"
     },
     {
+      "resolver": "openai.modelMenuFamilyPresentation"
+    },
+    {
       "resolver": "openai.hideManagedFields"
     }
   ]
