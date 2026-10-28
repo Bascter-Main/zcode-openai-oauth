@@ -1,0 +1,77 @@
+{
+  "schemaVersion": 1,
+  "id": "zcode-3.16.3",
+  "version": "3.16.3",
+  "appSpec": "patch-spec.json",
+  "appSpecSha256": "ef4a6907edc0da64c81597ae0af4ff09da97cfa51075f0c99f0a7a582eec05a4",
+  "glmSpec": "glm-spec.json",
+  "glmSpecSha256": "a7efe13cfbe665da5b599b0e2b66d2b0d7c1d0b761eddf05aa282d9ab5189106",
+  "appMarker": "ZcodeOpenAiOAuthAdapter",
+  "transforms": [],
+  "targets": [
+    {
+      "id": "host.main",
+      "specKey": "out/host/index.js",
+      "path": "out/host/index.js",
+      "postconditions": [
+        "ZcodeOpenAiOAuthAdapter",
+        "zcodeOaiProviderConfig",
+        "case\"openai\"",
+        "zcodeOaiSyncNow",
+        "zcodeOaiStartupSync",
+        "zcodeOaiManualSync",
+        "zcodeOaiClientVersion",
+        "registry.npmjs.org/@openai/codex/latest",
+        "zcodeOaiFallbackClientVersion=\"0.156.1\"",
+        "clientVersionCheckedAt",
+        "OpenAI catalog refresh failed: ",
+        "await this.repo.clearProvider(\"openai\")",
+        "zcodeOaiRemoveProvider",
+        "!==\"openai\"&&await this.repo.setActiveProvider",
+        "zcodeOaiActive!==\"openai\"",
+        "managedModelIds",
+        "OpenAI provider endpoint is managed"
+      ]
+    },
+    {
+      "id": "renderer.icons",
+      "specKey": "renderer.icons",
+      "resolver": {
+        "type": "marker-js",
+        "directory": "out/renderer/assets",
+        "marker": "shrink-0 object-contain"
+      },
+      "postconditions": [
+        "openai:\"data:image/svg+xml,",
+        "backgroundColor:`currentColor`",
+        "WebkitMaskImage:`url(\"",
+        ".result.provider!==\"openai\"&&",
+        "id:`openai`,title:`OpenAI`",
+        "providerId===\"zcode-openai-codex\").map",
+        "providerId!==\"zcode-openai-codex\"",
+        ".id===`preset`||",
+        ".id===`openai`",
+        "const zcodeOaiMenuProviders=[",
+        "key:`registry-provider:${",
+        "startsWith(`custom:zcode-openai-codex:`)",
+        "key===`custom:zcode-openai-codex`",
+        "`断开连接`:`连接 OpenAI`",
+        "provider:null,statusActive:!1",
+        "断开 OpenAI 连接失败",
+        ".providerId===\"zcode-openai-codex\")?null:",
+        ".providerId!==\"zcode-openai-codex\"?"
+      ]
+    }
+  ],
+  "glm": {
+    "path": "resources/glm/zcode.cjs",
+    "marker": "includes(\"chatgpt.com\")?!1:",
+    "postconditions": [
+      "includes(\"chatgpt.com\")?!1:",
+      "Object.fromEntries(Object.entries({...",
+      "error?.message??",
+      "timeoutMs:12e4,maxOutputBytes:1e5",
+      "defaultMs:12e4,maxMs:12e4"
+    ]
+  }
+}

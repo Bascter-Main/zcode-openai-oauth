@@ -2119,6 +2119,15 @@ function selfTest() {
     glmArgsResult.text.includes('["model","instructions","input","tools","store","stream","include","reasoning"]') &&
     glmArgsResult.text.includes(':{...Cd,tools:Ef,tool_choice:Gh}'),
     'Codex args whitelist renames safely and preserves the non-codex branch byte-identically');
+  const codexArgsExpr = glmArgsResult.text.slice(
+    glmArgsResult.text.indexOf('?') + 1, glmArgsResult.text.indexOf(':{...Cd,tools:Ef,tool_choice:Gh}'));
+  const codexArgs = Function('Cd', 'Ef', `return ${codexArgsExpr}`)(
+    { model: 'm', max_output_tokens: 9, input: [] },
+    [{ type: 'function', name: 'a' }, { type: 'function', name: 'b', strict: true }, { type: 'web_search' }]);
+  assert(!('max_output_tokens' in codexArgs) &&
+    codexArgs.tools[0].strict === false && codexArgs.tools[1].strict === true &&
+    !('strict' in codexArgs.tools[2]),
+    'Codex function tools default to strict:false without overriding explicit strict or non-function tools');
   let glmArgsFailedClosed = false;
   try {
     core.applySpansText('function q(){}', glmArgsSpans, null, 'glm',

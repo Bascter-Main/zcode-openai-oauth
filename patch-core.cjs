@@ -619,8 +619,13 @@ function resolveOpenAiCodexArgsWhitelist(text) {
     throw new Error(`codexArgs: responses getArgs return shape found ${matches.length} times`);
   }
   const [full, webSearchTool, argsVar, toolsVar, toolChoiceVar, warnA, warnB, storeVar] = matches[0];
+  // Codex answers an empty incomplete(max_output_tokens) response when a large tool
+  // list leaves `strict` unset; an explicit strict:false keeps every tool usable.
+  const codexTools =
+    `${toolsVar}?.map(zcodeOaiTool=>zcodeOaiTool&&zcodeOaiTool.type==="function"&&zcodeOaiTool.strict==null?` +
+    `{...zcodeOaiTool,strict:!1}:zcodeOaiTool)`;
   const codexArgs =
-    `Object.fromEntries(Object.entries({...${argsVar},tools:${toolsVar}}).filter(([k,v])=>` +
+    `Object.fromEntries(Object.entries({...${argsVar},tools:${codexTools}}).filter(([k,v])=>` +
     `["model","instructions","input","tools","store","stream","include","reasoning"].includes(k)&&v!==undefined))`;
   const replace =
     `return{webSearchToolName:${webSearchTool},` +
