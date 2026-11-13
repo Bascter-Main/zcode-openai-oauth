@@ -2178,6 +2178,15 @@ function selfTest() {
     guardedCallbackResult.text.includes('try{e.result.provider!=="openai"&&await e.setProviderFamilyDomain(e.result.provider)}') &&
     guardedCallbackResult.text.includes('catch(n){t=!1,logger.warn(`domain`,{error:n})}'),
     'OAuth callback identity resolver supports the guarded family-domain flow');
+  const familySelectionCallbackFixture = 'async function $or(e){let t=pse(e.result.provider);' +
+    'if(e.setUser(e.result.userInfo),e.setOAuthError(null),e.refreshLatestModelProviderFamilySelection)' +
+    'try{await e.refreshLatestModelProviderFamilySelection(e.result.provider)}catch(e){}}';
+  const familySelectionCallbackResult = core.applySpansText(familySelectionCallbackFixture, callbackSpans,
+    null, 'renderer.icons', { strict: true, label: 'family-selection-callback-fixture' });
+  assert(familySelectionCallbackResult.failures.length === 0 &&
+    familySelectionCallbackResult.text.includes('if(e.result.provider!=="openai"&&e.setUser(e.result.userInfo),') &&
+    familySelectionCallbackResult.text.includes('e.result.provider!=="openai"&&e.refreshLatestModelProviderFamilySelection)try{'),
+    'OAuth callback identity resolver supports the 3.18.2 family-selection flow');
   let callbackFailedClosed = false;
   try {
     core.applySpansText('function q(){}', callbackSpans, null, 'renderer.icons',

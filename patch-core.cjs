@@ -477,14 +477,14 @@ function resolveOpenAiRegisterAdapterCase(text) {
   const re = new RegExp(
     `for\\(let (${JS_IDENT}) of (${JS_IDENT})\\.providers\\)switch\\(\\1\\.id\\)\\{` +
     `case (${JS_IDENT}):(${JS_IDENT})\\.push\\(new (${JS_IDENT})\\(\\1,(${JS_IDENT})\\)\\);break;` +
-    `case"zai":\\4\\.push\\(new (${JS_IDENT})\\(\\1,\\6\\)\\);break;default:break\\}return \\4\\}`);
+    `case"zai":((?:case ${JS_IDENT}:)?)\\4\\.push\\(new (${JS_IDENT})\\(\\1,\\6\\)\\);break;default:break\\}return \\4\\}`);
   const match = text.match(re);
   if (!match) throw new Error('openaiAdapterCase: createOAuthProviderAdapters switch not found');
-  const [full, loopVar, providersVar, bigmodelId, arrVar, bigmodelCtor, apiClientVar, zaiCtor] = match;
+  const [full, loopVar, providersVar, bigmodelId, arrVar, bigmodelCtor, apiClientVar, zaiCnCase, zaiCtor] = match;
   const replace =
     `for(let ${loopVar} of ${providersVar}.providers)switch(${loopVar}.id){` +
     `case ${bigmodelId}:${arrVar}.push(new ${bigmodelCtor}(${loopVar},${apiClientVar}));break;` +
-    `case"zai":${arrVar}.push(new ${zaiCtor}(${loopVar},${apiClientVar}));break;` +
+    `case"zai":${zaiCnCase}${arrVar}.push(new ${zaiCtor}(${loopVar},${apiClientVar}));break;` +
     `case"openai":${arrVar}.push(new ZcodeOpenAiOAuthAdapter(${loopVar},${apiClientVar}));break;` +
     `default:break}return ${arrVar}}`;
   return { find: full, replace };
@@ -549,12 +549,28 @@ function resolveOpenAiHookManualRefresh(text) {
 // Remove the managed provider when the OpenAI credential is cleared (logout).
 function resolveOpenAiHookLogout(text) {
   keepNamesBinding(text, 'OAuthCredentialRepo', 'openaiLogoutHook');
-  const re = new RegExp(
-    `async clearProvider\\((${JS_IDENT})\\)\\{(await this\\.credentialService\\.delete\\(${JS_IDENT}\\(\\1\\)\\)[^}]*)\\}`);
-  const match = text.match(re);
-  if (!match) throw new Error('openaiLogoutHook: credential repo clearProvider not found');
-  const [full, param, body] = match;
-  const replace = `async clearProvider(${param}){${body};if(${param}==="openai")zcodeOaiRemoveProvider()}`;
+  const legacyRe = new RegExp(
+    `async clearProvider\\((${JS_IDENT})\\)\\{(await this\\.credentialService\\.delete\\(${JS_IDENT}\\(\\1\\)\\)[^}]*)\\}`, 'g');
+  const batchRe = new RegExp(
+    `async clearProvider\\((${JS_IDENT})\\)\\{let (${JS_IDENT})=await this\\.loadSessionSnapshot\\(\\);` +
+    `if\\(\\2\\[(${JS_IDENT})\\]===\\1\\)\\{await this\\.clearSession\\(\\2\\);return\\}` +
+    `(await this\\.localStore\\.updateMany\\(\\{\\[${JS_IDENT}\\(\\1\\)\\]:null,\\[${JS_IDENT}\\(\\1\\)\\]:null,` +
+    `\\[${JS_IDENT}\\(\\1\\)\\]:null,\\[${JS_IDENT}\\]:${JS_IDENT}\\(\\)\\},\\{expected:\\2\\}\\))\\}`, 'g');
+  const legacyMatches = [...text.matchAll(legacyRe)];
+  const batchMatches = [...text.matchAll(batchRe)];
+  if (legacyMatches.length + batchMatches.length !== 1) {
+    throw new Error('openaiLogoutHook: credential repo clearProvider not found');
+  }
+  if (legacyMatches.length === 1) {
+    const [full, param, body] = legacyMatches[0];
+    return { find: full, replace: `async clearProvider(${param}){${body};if(${param}==="openai")zcodeOaiRemoveProvider()}` };
+  }
+  const [full, param, snapshotVar, activeKey, updateStmt] = batchMatches[0];
+  const replace =
+    `async clearProvider(${param}){let ${snapshotVar}=await this.loadSessionSnapshot();` +
+    `if(${snapshotVar}[${activeKey}]===${param}){await this.clearSession(${snapshotVar});` +
+    `if(${param}==="openai")zcodeOaiRemoveProvider();return}` +
+    `${updateStmt};if(${param}==="openai")zcodeOaiRemoveProvider()}`;
   return { find: full, replace };
 }
 
@@ -666,49 +682,111 @@ function resolveOpenAiCodexErrorSchema(text) {
 // the ChatGPT user and (via the null family domain) duplicates coding-plan rows in
 // the settings navigation. Keep zai/bigmodel semantics untouched.
 function resolveOpenAiNoActiveFlip(text) {
-  const re = new RegExp(
+  const legacyRe = new RegExp(
     `await this\\.repo\\.saveUserProfile\\((${JS_IDENT}),(${JS_IDENT})\\((${JS_IDENT}),(${JS_IDENT})\\)\\),` +
     `await (${JS_IDENT})\\(\\),await this\\.repo\\.setActiveProvider\\((${JS_IDENT})\\),`, 'g');
-  const matches = [...text.matchAll(re)];
-  if (matches.length !== 1) {
-    throw new Error(`openaiNoActiveFlip: persistOAuthSession completion found ${matches.length} times`);
+  const commitRe = new RegExp(
+    `async persistOAuthSession\\((${JS_IDENT}),(${JS_IDENT}),(${JS_IDENT}),(${JS_IDENT}),(${JS_IDENT})\\)\\{` +
+    `if\\(!await this\\.repo\\.commitSession\\(\\4,\\1,\\2,(${JS_IDENT})\\(\\1,\\3\\),\\(\\)\\=>\\{` +
+    `if\\(!\\5\\(\\)\\)throw new Error\\("OAuth flow \\\\u5DF2\\\\u53D6\\\\u6D88"\\)\\}\\)\\)` +
+    `throw new Error\\("OAuth \\\\u4F1A\\\\u8BDD\\\\u5DF2\\\\u53D8\\\\u5316\\\\uFF0C\\\\u8BF7\\\\u91CD\\\\u65B0\\\\u53D1\\\\u8D77\\\\u767B\\\\u5F55"\\);`, 'g');
+  const legacyMatches = [...text.matchAll(legacyRe)];
+  const commitMatches = [...text.matchAll(commitRe)];
+  if (legacyMatches.length + commitMatches.length !== 1) {
+    throw new Error(`openaiNoActiveFlip: persistOAuthSession completion found ${legacyMatches.length + commitMatches.length} times`);
   }
-  const [full, provider, wrapFn, innerProvider, profileVar, assertFn, activeProvider] = matches[0];
-  if (provider !== innerProvider || provider !== activeProvider) {
-    throw new Error('openaiNoActiveFlip: completion touches more than one provider binding');
+  if (legacyMatches.length === 1) {
+    const [full, provider, wrapFn, innerProvider, profileVar, assertFn, activeProvider] = legacyMatches[0];
+    if (provider !== innerProvider || provider !== activeProvider) {
+      throw new Error('openaiNoActiveFlip: completion touches more than one provider binding');
+    }
+    const replace =
+      `await this.repo.saveUserProfile(${provider},${wrapFn}(${provider},${profileVar})),` +
+      `await ${assertFn}(),${provider}!=="openai"&&await this.repo.setActiveProvider(${provider}),`;
+    return { find: full, replace };
   }
-  const replace =
-    `await this.repo.saveUserProfile(${provider},${wrapFn}(${provider},${profileVar})),` +
-    `await ${assertFn}(),${provider}!=="openai"&&await this.repo.setActiveProvider(${provider}),`;
-  return { find: full, replace };
+  const [full, provider] = commitMatches[0];
+  return {
+    find: full,
+    replace: `${full}!1&&${provider}!=="openai"&&await this.repo.setActiveProvider(${provider});`,
+  };
 }
 
 // Self-heal installs where the pre-fix login already stored active=openai: resolve
 // the active provider back to a family identity that still holds a token.
 function resolveOpenAiSanitizeActiveProvider(text) {
-  const loadRe = new RegExp(
+  const legacyLoadRe = new RegExp(
     `async loadActiveProvider\\(\\)\\{try\\{return await this\\.credentialService\\.load\\((${JS_IDENT})\\)\\}` +
     `catch\\((${JS_IDENT})\\)\\{if\\(!(${JS_IDENT})\\(\\2\\)\\)throw \\2;` +
     `return await this\\.clearCorruptOAuthSession\\(\\),null\\}\\}`, 'g');
-  const loadMatches = [...text.matchAll(loadRe)];
-  if (loadMatches.length !== 1) {
-    throw new Error(`openaiActiveRepair: loadActiveProvider found ${loadMatches.length} times`);
+  const batchLoadRe = new RegExp(
+    `async commitSession\\((${JS_IDENT}),(${JS_IDENT}),(${JS_IDENT}),(${JS_IDENT}),(${JS_IDENT})\\)\\{` +
+    `let (${JS_IDENT})=Object\\.fromEntries\\(this\\.sessionKeys\\(\\)\\.map\\((${JS_IDENT})=>\\[\\7,null\\]\\)\\);` +
+    `return Object\\.assign\\(\\6,\\{\\[(${JS_IDENT})\\]:\\2,\\[(${JS_IDENT})\\]:(${JS_IDENT})\\(\\),` +
+    `\\[(${JS_IDENT})\\]:\\3\\.zcodeJwtToken\\?\\?null,\\[(${JS_IDENT})\\]:\\3\\.linkedBigModel\\?` +
+    `JSON\\.stringify\\(\\{userId:\\4\\.id,\\.\\.\\.\\3\\.linkedBigModel\\}\\):null,` +
+    `\\[(${JS_IDENT})\\(\\2\\)\\]:\\3\\.accessToken,\\[(${JS_IDENT})\\(\\2\\)\\]:\\3\\.refreshToken\\?\\?null,` +
+    `\\[(${JS_IDENT})\\(\\2\\)\\]:JSON\\.stringify\\((${JS_IDENT})\\(\\2\\)&&\\4\\.rawProfile\\?\\4\\.rawProfile:\\4\\)\\}\\),` +
+    `this\\.localStore\\.updateMany\\(\\6,\\{expected:\\1,assertCurrent:\\5\\}\\)\\}` +
+    `async clearSession\\((${JS_IDENT})\\)\\{return this\\.localStore\\.updateMany\\(\\{\\.\\.\\.Object\\.fromEntries\\(` +
+    `this\\.sessionKeys\\(\\)\\.map\\((${JS_IDENT})=>\\[\\18,null\\]\\)\\),\\[\\9\\]:\\10\\(\\)\\},\\{expected:\\17\\}\\)\\}` +
+    `async getActiveProvider\\(\\)\\{return this\\.loadActiveProvider\\(\\)\\}` +
+    `async setActiveProvider\\((${JS_IDENT})\\)\\{await this\\.saveActiveProvider\\(\\19\\)\\}` +
+    `async loadActiveProvider\\(\\)\\{try\\{return await this\\.credentialService\\.load\\(\\8\\)\\}` +
+    `catch\\((${JS_IDENT})\\)\\{if\\(!(${JS_IDENT})\\(\\20\\)\\)throw \\20;` +
+    `return await this\\.clearCorruptOAuthSession\\(\\[\\8\\]\\),this\\.credentialService\\.load\\(\\8\\)\\}\\}`, 'g');
+  const legacyMatches = [...text.matchAll(legacyLoadRe)];
+  const batchMatches = [...text.matchAll(batchLoadRe)];
+  if (legacyMatches.length + batchMatches.length !== 1) {
+    throw new Error(`openaiActiveRepair: loadActiveProvider found ${legacyMatches.length + batchMatches.length} times`);
   }
-  const tokenRe = new RegExp(
-    `async loadTokenSet\\((${JS_IDENT})\\)\\{try\\{let (${JS_IDENT})=await this\\.credentialService\\.load\\((${JS_IDENT})\\(\\1\\)\\);`, 'g');
-  const tokenMatches = [...text.matchAll(tokenRe)];
-  if (tokenMatches.length !== 1) {
-    throw new Error(`openaiActiveRepair: loadTokenSet found ${tokenMatches.length} times`);
+  if (legacyMatches.length === 1) {
+    const tokenRe = new RegExp(
+      `async loadTokenSet\\((${JS_IDENT})\\)\\{try\\{let (${JS_IDENT})=await this\\.credentialService\\.load\\((${JS_IDENT})\\(\\1\\)\\);`, 'g');
+    const tokenMatches = [...text.matchAll(tokenRe)];
+    if (tokenMatches.length !== 1) {
+      throw new Error(`openaiActiveRepair: loadTokenSet found ${tokenMatches.length} times`);
+    }
+    const [full, activeKey, errVar, isCorrupt] = legacyMatches[0];
+    const tokenKey = tokenMatches[0][3];
+    const replace =
+      `async loadActiveProvider(){try{const zcodeOaiActive=await this.credentialService.load(${activeKey});` +
+      `if(zcodeOaiActive!=="openai")return zcodeOaiActive;` +
+      `for(const zcodeOaiFamily of ["zai","bigmodel"]){try{` +
+      `if(await this.credentialService.load(${tokenKey}(zcodeOaiFamily)))return zcodeOaiFamily}catch(zcodeOaiProbe){}}` +
+      `return null}catch(${errVar}){if(!${isCorrupt}(${errVar}))throw ${errVar};` +
+      `return await this.clearCorruptOAuthSession(),null}}`;
+    return { find: full, replace };
   }
-  const [full, activeKey, errVar, isCorrupt] = loadMatches[0];
-  const tokenKey = tokenMatches[0][3];
+  const [
+    full, expectedVar, providerVar, tokenSetVar, profileVar, assertVar, entriesVar, keyVar,
+    activeKey, revKey, uuidFn, jwtKey, linkedKey, accessKeyFn, refreshKeyFn, profileKeyFn, isZaiFn,
+    clearExpectedVar, clearKeyVar, setParamVar, errVar, isCorrupt,
+  ] = batchMatches[0];
   const replace =
+    `async commitSession(${expectedVar},${providerVar},${tokenSetVar},${profileVar},${assertVar}){` +
+    `if(${providerVar}==="openai")return this.localStore.updateMany({` +
+    `[${accessKeyFn}(${providerVar})]:${tokenSetVar}.accessToken,` +
+    `[${refreshKeyFn}(${providerVar})]:${tokenSetVar}.refreshToken??null,` +
+    `[${profileKeyFn}(${providerVar})]:JSON.stringify(${profileVar}),` +
+    `[${revKey}]:${uuidFn}()},{expected:${expectedVar},assertCurrent:${assertVar}});` +
+    `let ${entriesVar}=Object.fromEntries(this.sessionKeys().filter(${keyVar}=>!${keyVar}.startsWith("oauth:openai:")).map(${keyVar}=>[${keyVar},null]));` +
+    `return Object.assign(${entriesVar},{[${activeKey}]:${providerVar},[${revKey}]:${uuidFn}(),` +
+    `[${jwtKey}]:${tokenSetVar}.zcodeJwtToken??null,[${linkedKey}]:${tokenSetVar}.linkedBigModel?` +
+    `JSON.stringify({userId:${profileVar}.id,...${tokenSetVar}.linkedBigModel}):null,` +
+    `[${accessKeyFn}(${providerVar})]:${tokenSetVar}.accessToken,[${refreshKeyFn}(${providerVar})]:${tokenSetVar}.refreshToken??null,` +
+    `[${profileKeyFn}(${providerVar})]:JSON.stringify(${isZaiFn}(${providerVar})&&${profileVar}.rawProfile?${profileVar}.rawProfile:${profileVar})}),` +
+    `this.localStore.updateMany(${entriesVar},{expected:${expectedVar},assertCurrent:${assertVar}})}` +
+    `async clearSession(${clearExpectedVar}){return this.localStore.updateMany({...Object.fromEntries(` +
+    `this.sessionKeys().filter(${clearKeyVar}=>!${clearKeyVar}.startsWith("oauth:openai:")).map(${clearKeyVar}=>[${clearKeyVar},null])),[${revKey}]:${uuidFn}()},{expected:${clearExpectedVar}})}` +
+    `async getActiveProvider(){return this.loadActiveProvider()}` +
+    `async setActiveProvider(${setParamVar}){await this.saveActiveProvider(${setParamVar})}` +
     `async loadActiveProvider(){try{const zcodeOaiActive=await this.credentialService.load(${activeKey});` +
     `if(zcodeOaiActive!=="openai")return zcodeOaiActive;` +
     `for(const zcodeOaiFamily of ["zai","bigmodel"]){try{` +
-    `if(await this.credentialService.load(${tokenKey}(zcodeOaiFamily)))return zcodeOaiFamily}catch(zcodeOaiProbe){}}` +
+    `if(await this.credentialService.load(${accessKeyFn}(zcodeOaiFamily)))return zcodeOaiFamily}catch(zcodeOaiProbe){}}` +
     `return null}catch(${errVar}){if(!${isCorrupt}(${errVar}))throw ${errVar};` +
-    `return await this.clearCorruptOAuthSession(),null}}`;
+    `return await this.clearCorruptOAuthSession([${activeKey}]),this.credentialService.load(${activeKey})}}`;
   return { find: full, replace };
 }
 
@@ -724,10 +802,15 @@ function resolveOpenAiCallbackIdentity(text) {
     `(${JS_IDENT})\\.setUser\\(\\1\\.result\\.userInfo\\),\\1\\.setOAuthError\\(null\\);` +
     `let (${JS_IDENT})=!0;try\\{await \\1\\.setProviderFamilyDomain\\(\\1\\.result\\.provider\\)\\}` +
     `catch\\((${JS_IDENT})\\)\\{\\2=!1,`, 'g');
+  const familySelectionRe = new RegExp(
+    `if\\((${JS_IDENT})\\.setUser\\(\\1\\.result\\.userInfo\\),\\1\\.setOAuthError\\(null\\),` +
+    `\\1\\.refreshLatestModelProviderFamilySelection\\)try\\{` +
+    `await \\1\\.refreshLatestModelProviderFamilySelection\\(\\1\\.result\\.provider\\)`, 'g');
   const legacyMatches = [...text.matchAll(legacyRe)];
   const guardedMatches = [...text.matchAll(guardedRe)];
-  if (legacyMatches.length + guardedMatches.length !== 1) {
-    throw new Error(`openaiCallbackIdentity: OAuth success handler found ${legacyMatches.length + guardedMatches.length} times`);
+  const familySelectionMatches = [...text.matchAll(familySelectionRe)];
+  if (legacyMatches.length + guardedMatches.length + familySelectionMatches.length !== 1) {
+    throw new Error(`openaiCallbackIdentity: OAuth success handler found ${legacyMatches.length + guardedMatches.length + familySelectionMatches.length} times`);
   }
   if (legacyMatches.length === 1) {
     const [full, ctx] = legacyMatches[0];
@@ -738,13 +821,23 @@ function resolveOpenAiCallbackIdentity(text) {
         `${ctx}.result.provider!=="openai"&&await ${ctx}.setProviderFamilyDomain(${ctx}.result.provider),`,
     };
   }
-  const [full, ctx, applied, error] = guardedMatches[0];
+  if (guardedMatches.length === 1) {
+    const [full, ctx, applied, error] = guardedMatches[0];
+    return {
+      find: full,
+      replace: `${ctx}.result.provider!=="openai"&&${ctx}.setUser(${ctx}.result.userInfo),` +
+        `${ctx}.setOAuthError(null);let ${applied}=!0;try{` +
+        `${ctx}.result.provider!=="openai"&&await ${ctx}.setProviderFamilyDomain(${ctx}.result.provider)}` +
+        `catch(${error}){${applied}=!1,`,
+    };
+  }
+  const [full, ctx] = familySelectionMatches[0];
   return {
     find: full,
-    replace: `${ctx}.result.provider!=="openai"&&${ctx}.setUser(${ctx}.result.userInfo),` +
-      `${ctx}.setOAuthError(null);let ${applied}=!0;try{` +
-      `${ctx}.result.provider!=="openai"&&await ${ctx}.setProviderFamilyDomain(${ctx}.result.provider)}` +
-      `catch(${error}){${applied}=!1,`,
+    replace: `if(${ctx}.result.provider!=="openai"&&${ctx}.setUser(${ctx}.result.userInfo),` +
+      `${ctx}.setOAuthError(null),` +
+      `${ctx}.result.provider!=="openai"&&${ctx}.refreshLatestModelProviderFamilySelection)try{` +
+      `await ${ctx}.refreshLatestModelProviderFamilySelection(${ctx}.result.provider)`,
   };
 }
 
@@ -880,7 +973,7 @@ function resolveOpenAiDisconnectHandler(text) {
     throw new Error(`openaiDisconnectHandler: coding plan disconnect handler found ${matches.length} times`);
   }
   const [full, preset, provider, providerName, setDisconnect, setSync] = matches[0];
-  const logoutMatch = text.match(new RegExp(`await (${JS_IDENT})\\.logout\\(${provider}\\)`));
+  const logoutMatch = text.match(new RegExp(`await (${JS_IDENT})\\.logout\\((?:${provider})?\\)`));
   const refreshMatch = text.match(new RegExp(`clearUserWhenLoggedOut:!0\\}\\),await (${JS_IDENT})\\(\\),`));
   const loggerMatch = text.match(new RegExp(`(${JS_IDENT})\\.info\\(\`\\[ModelProviderSection\\] 请求解绑`));
   if (!logoutMatch || !refreshMatch || !loggerMatch) {
@@ -891,14 +984,28 @@ function resolveOpenAiDisconnectHandler(text) {
   const [, logger] = loggerMatch;
   const clear = `${setDisconnect}(zcodeOaiP=>zcodeOaiP===${preset}?null:zcodeOaiP),` +
     `${setSync}(zcodeOaiP=>zcodeOaiP===${preset}?null:zcodeOaiP)`;
-  const replace =
+  const disconnectReplace =
     `async(${preset},${provider},${providerName})=>{` +
     `if(${provider}===\`openai\`){${setDisconnect}(${preset}),${setSync}(${preset});try{` +
     `await ${oauthService}.logout(${provider}),await ${refresh}()` +
     `}catch(zcodeOaiErr){${logger}.error(\`[ModelProviderSection] 断开 OpenAI 连接失败\`,{error:zcodeOaiErr})}` +
     `finally{${clear}}return}` +
     full.slice(`async(${preset},${provider},${providerName})=>{`.length);
-  return { find: full, replace };
+  const loginTailRe = new RegExp(
+    `let (${JS_IDENT})=(${JS_IDENT})\\?\\.loginProvider;` +
+    `(${JS_IDENT})\\(\\1&&(${JS_IDENT})\\(\\1\\)\\?\\1:void 0\\)\\}\\)\\(\\)\\.catch\\([^)]+连接套餐失败[\\s\\S]{0,160}?` +
+    full.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g');
+  const loginTailMatches = [...text.matchAll(loginTailRe)];
+  if (loginTailMatches.length === 1) {
+    const [tailFull, loginVar, , reqFn, guardFn] = loginTailMatches[0];
+    const targetOld = `${reqFn}(${loginVar}&&${guardFn}(${loginVar})?${loginVar}:void 0)`;
+    const targetNew = `${reqFn}(${provider}===\`openai\`?${provider}:${loginVar}&&${guardFn}(${loginVar})?${loginVar}:void 0)`;
+    return {
+      find: tailFull,
+      replace: tailFull.slice(0, tailFull.length - full.length).replace(targetOld, targetNew) + disconnectReplace,
+    };
+  }
+  return { find: full, replace: disconnectReplace };
 }
 
 // The OpenAI settings group is managed, so it should use the fixed provider-row
@@ -1017,16 +1124,26 @@ function resolveOpenAiHideManagedFields(text) {
 // managed provider in place. Route logout("openai") through the credential
 // repo's clearProvider, which already triggers zcodeOaiRemoveProvider.
 function resolveOpenAiLogoutProvider(text) {
-  const re = new RegExp(
+  const legacyRe = new RegExp(
     `async logout\\((${JS_IDENT})\\)\\{if\\(!\\1\\)\\{await this\\.logoutActiveSession\\(\\);return\\}`, 'g');
-  const matches = [...text.matchAll(re)];
-  if (matches.length !== 1) {
-    throw new Error(`openaiLogoutProvider: OAuthService.logout found ${matches.length} times`);
+  const internalRe = new RegExp(
+    `async logoutInternal\\((${JS_IDENT})\\)\\{if\\(!\\1\\)\\{if\\(!await this\\.logoutActiveSession\\(\\)\\)`, 'g');
+  const legacyMatches = [...text.matchAll(legacyRe)];
+  const internalMatches = [...text.matchAll(internalRe)];
+  if (legacyMatches.length + internalMatches.length !== 1) {
+    throw new Error(`openaiLogoutProvider: OAuthService.logout found ${legacyMatches.length + internalMatches.length} times`);
   }
-  const [full, provider] = matches[0];
+  if (legacyMatches.length === 1) {
+    const [full, provider] = legacyMatches[0];
+    const replace =
+      `async logout(${provider}){if(${provider}==="openai"){await this.repo.clearProvider("openai"),` +
+      `await this.cancelPending("openai");return}if(!${provider}){await this.logoutActiveSession();return}`;
+    return { find: full, replace };
+  }
+  const [full, provider] = internalMatches[0];
   const replace =
-    `async logout(${provider}){if(${provider}==="openai"){await this.repo.clearProvider("openai"),` +
-    `await this.cancelPending("openai");return}if(!${provider}){await this.logoutActiveSession();return}`;
+    `async logoutInternal(${provider}){if(${provider}==="openai"){await this.repo.clearProvider("openai"),` +
+    `await this.cancelPending("openai");return}if(!${provider}){if(!await this.logoutActiveSession())`;
   return { find: full, replace };
 }
 
